@@ -92,3 +92,41 @@ def memory_create(
         "warnings": warnings or None,
         "conflicts": [c.model_dump(by_alias=True) for c in conflicts] or None,
     }
+
+
+def memory_get(
+    conn: sqlite3.Connection,
+    id: str,
+    include_evidence: bool = True,
+) -> dict | None:
+    """Retrieve a memory item with staleness check (§43 memory_get)."""
+    item = get_item(conn, id)
+    if item is None:
+        return None
+
+    warnings: list[str] = []
+    if include_evidence:
+        stale_evidence = []
+        for ev in item.evidence:
+            if check_staleness(
+                Path(ev.path), ev.start_line, ev.end_line, ev.content_hash
+            ):
+                stale_evidence.append(ev)
+                warnings.append(
+                    f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}"
+                )
+        if stale_evidence and item.status == MemoryStatus.ACTIVE:
+            update_item_row(
+                conn,
+                id,
+                {
+                    "status": MemoryStatus.POTENTIALLY_STALE.value,
+                    "updated_at": _now(),
+                },
+            )
+            item.status = MemoryStatus.POTENTIALLY_STALE
+
+    result = item.model_dump(by_alias=True)
+    if warnings:
+        result["warnings"] = warnings
+    return result
