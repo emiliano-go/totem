@@ -47,3 +47,155 @@ def _serialize_conflict(c: Conflict) -> str:
     if c.recommended:
         lines.append(f"    Recommended: {c.recommended}")
     return "\n".join(lines)
+
+
+def engineering_context(
+    conn: sqlite3.Connection,
+    tags: list[str],
+    task: str | None = None,
+    token_budget: int | None = None,
+    types: list[str] | None = None,
+    include_stale: bool = False,
+) -> dict:
+    """Assemble engineering context per §48 output ordering.
+
+    Pipeline: tag match → score → sort → truncate to budget → serialize.
+    Conflicts and warnings are NEVER dropped for budget (§48).
+
+    §46: flagged_ambiguity items surfaced at top with blocking:true.
+    """
+    items = list_items(conn, tags=tags, limit=200)
+
+    scored = []
+    for item in items:
+        if types and item.type.value not in types:
+            continue
+        if item.status == MemoryStatus.DELETED:
+            continue
+        if item.status == MemoryStatus.POTENTIALLY_STALE and not include_stale:
+            continue
+        score = _score_item(item, tags)
+        scored.append((score, item))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # §46: Collect blocking ambiguities, always shown, never budget-truncated
+    blocking_ambiguities: list[dict] = []
+    for _, item in scored:
+        meta = item.metadata or {}
+        if meta.get("flagged_ambiguity") and meta.get("impact") in ("high", "critical"):
+            blocking_ambiguities.append({
+                "id": item.id,
+                "title": item.title,
+                "statement": item.statement,
+                "impact": meta.get("impact"),
+                "blocking": True,
+            })
+
+    # Collect staleness warnings, never budget-truncated
+    stale_warnings: list[str] = []
+    for _, item in scored:
+        for ev in item.evidence:
+            if check_staleness(Path(ev.path), ev.start_line, ev.end_line, ev.content_hash):
+                stale_warnings.append(
+                    f"STALE: [{item.type.value}] {item.title}: {ev.path}:{ev.start_line}-{ev.end_line}"
+                )
+
+    # §42: Load stored conflicts, never budget-truncated
+    stored_conflicts = get_all_conflicts(conn)
+
+    # Group by type for §48 ordering
+    TYPE_ORDER = [
+        MemoryType.INVARIANT,
+        MemoryType.DECISION,
+        MemoryType.GOTCHA,
+        MemoryType.REJECTED_IDEA,
+    ]
+    grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
+    for _, item in scored:
+        grouped[item.type.value].append(item)
+
+    # Build sections per §48 output ordering
+    sections: list[str] = []
+
+    # TASK
+    if task:
+        sections.append(f"TASK: {task}")
+
+    # BLOCKING AMBIGUITIES (§46): always shown, never budget-truncated
+    if blocking_ambiguities:
+        sections.append("\nBLOCKING AMBIGUITIES:")
+        for amb in blocking_ambiguities:
+            sections.append(f"  [BLOCKING] {amb['title']}")
+            sections.append(f"    Statement: {amb['statement']}")
+            sections.append(f"    Impact: {amb['impact']}")
+    else:
+        sections.append("\nBLOCKING AMBIGUITIES: (none)")
+
+    # CONFLICTS: always shown, never budget-truncated
+    if stored_conflicts:
+        sections.append("\nCONFLICTS:")
+        for c in stored_conflicts:
+            sections.append(_serialize_conflict(c))
+    else:
+        sections.append("\nCONFLICTS: (none)")
+
+    # §48: CRITICAL INVARIANTS, DECISIONS, GOTCHAS, REJECTED IDEAS
+    LABELS = {
+        MemoryType.INVARIANT: "CRITICAL INVARIANTS",
+        MemoryType.DECISION: "DECISIONS",
+        MemoryType.GOTCHA: "GOTCHAS",
+        MemoryType.REJECTED_IDEA: "REJECTED IDEAS",
+    }
+
+    # Budget: reserve fixed minimum for non-item sections
+    # (ambiguities + conflicts + warnings are never truncated)
+    BUDGET_RESERVED_RATIO = 0.3  # 30% reserved for meta-sections
+    effective_budget = token_budget
+    if token_budget and token_budget > 0:
+        effective_budget = int(token_budget * (1.0 - BUDGET_RESERVED_RATIO))
+
+    char_count = 0
+    truncated = False
+
+    for type_ in TYPE_ORDER:
+        items_of_type = grouped[type_.value]
+        if not items_of_type:
+            continue
+        label = LABELS[type_]
+        section_text = f"\n{label}:\n"
+        if effective_budget and char_count + len(section_text) > effective_budget:
+            truncated = True
+            sections.append(f"\n{label}: (truncated, budget exceeded)")
+            continue
+        sections.append(section_text)
+        char_count += len(section_text)
+        for item in items_of_type:
+            item_text = _serialize_item(item)
+            if effective_budget and char_count + len(item_text) > effective_budget:
+                truncated = True
+                sections.append(f"  ... ({len(items_of_type) - items_of_type.index(item)} items truncated)")
+                break
+            sections.append(item_text)
+            char_count += len(item_text)
+
+    # STALE WARNINGS: always shown, never budget-truncated
+    if stale_warnings:
+        sections.append("\nSTALE WARNINGS:")
+        for w in stale_warnings:
+            sections.append(f"  {w}")
+
+    context = "\n".join(sections)
+
+    selected_ids = [item.id for _, item in scored]
+    omitted_ids = []
+    if truncated:
+        omitted_ids = [item.id for _, item in scored if item.id not in selected_ids]
+
+    return {
+        "context": context,
+        "selectedIds": selected_ids,
+        "omittedIds": omitted_ids,
+        "conflicts": [c.model_dump(by_alias=True) for c in stored_conflicts],
+        "warnings": stale_warnings,
+    }
