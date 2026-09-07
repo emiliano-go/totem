@@ -117,3 +117,75 @@ def _row_to_item(row: sqlite3.Row) -> MemoryItem:
         verified_at=row["verified_at"],
         metadata=json.loads(row["metadata"]) if row["metadata"] else None,
     )
+
+
+def insert_item(conn: sqlite3.Connection, item: MemoryItem) -> None:
+    conn.execute(
+        """INSERT INTO memory_items
+           (id, type, title, statement, details, tags, status, confidence,
+            importance, evidence, related_memory_ids, created_at, updated_at,
+            verified_at, metadata, schema_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            item.id,
+            item.type.value,
+            item.title,
+            item.statement,
+            item.details,
+            json.dumps(item.tags),
+            item.status.value,
+            item.confidence,
+            item.importance,
+            json.dumps([e.model_dump(by_alias=True) for e in item.evidence]),
+            json.dumps(item.related_memory_ids),
+            item.created_at,
+            item.updated_at,
+            item.verified_at,
+            json.dumps(item.metadata) if item.metadata else None,
+            SCHEMA_VERSION,
+        ),
+    )
+    conn.commit()
+
+
+def get_item(conn: sqlite3.Connection, item_id: str) -> MemoryItem | None:
+    row = conn.execute(
+        "SELECT * FROM memory_items WHERE id = ? AND status != 'deleted'",
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_item(row)
+
+
+def update_item_row(
+    conn: sqlite3.Connection,
+    item_id: str,
+    fields: dict[str, Any],
+) -> None:
+    if not fields:
+        return
+    set_clauses = []
+    values = []
+    for key, val in fields.items():
+        set_clauses.append(f"{key} = ?")
+        values.append(val)
+    values.append(item_id)
+    conn.execute(
+        f"UPDATE memory_items SET {', '.join(set_clauses)} WHERE id = ?",
+        values,
+    )
+    conn.commit()
+
+
+def soft_delete(conn: sqlite3.Connection, item_id: str) -> None:
+    from datetime import datetime, timezone
+
+    update_item_row(
+        conn,
+        item_id,
+        {
+            "status": MemoryStatus.DELETED.value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
