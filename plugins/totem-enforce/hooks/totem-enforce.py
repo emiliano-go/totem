@@ -19,7 +19,7 @@ SUBCMDS = re.compile(
     r"^(grep|find|cat|head|tail|wc|sort|uniq|awk|sed|less|more|diff|comm|xargs|file|rg|ag|ack|jq)$"
 )
 STOP_WORDS = {"the", "and", "for", "not", "with", "from", "this", "that"}
-FTS5_SPECIAL = re.compile(r'[: "+*^()~]')
+FTS5_SPECIAL = re.compile(r'[:"\'+*^()~]')
 
 
 def get_state_path() -> Path:
@@ -81,7 +81,8 @@ def tokenize_bash(command: str) -> list[str]:
     if SUBCMDS.match(first):
         # Sub-command: tokenize the full command
         sanitized = FTS5_SPECIAL.sub(" ", cmd)
-        words = [w.lower() for w in sanitized.split() if len(w) > 2 and w.lower() not in STOP_WORDS]
+        words = re.split(r'[/\\._\- =,]+', sanitized)
+        words = [w.lower() for w in words if len(w) > 2 and w.lower() not in STOP_WORDS]
         return list(dict.fromkeys(words))  # dedupe, preserve order
     return [first] if len(first) > 2 else []
 

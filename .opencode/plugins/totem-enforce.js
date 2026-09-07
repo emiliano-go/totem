@@ -4,6 +4,7 @@ let searchedThisTurn = {}
 
 const FTS5_SPECIAL = /[:"+*^()~]/g
 function sanitizeFts5(q) { return q.replace(FTS5_SPECIAL, " ").trim() }
+function stripSpecials(q) { return q.replace(/[:"'+*^()~]/g, "").trim() }
 
 // Sub-commands that search/read file content (not just run a binary)
 const SUBCMDS = /^(grep|find|cat|head|tail|wc|sort|uniq|awk|sed|less|more|diff|comm|xargs|file|rg|ag|ack|jq)$/
@@ -20,7 +21,7 @@ function tokenize(sk) {
     // If first word is a sub-command that searches content, tokenize the full command
     if (first && SUBCMDS.test(first)) {
       return [...new Set(
-        sanitizeFts5(cmd).split(/[/\\._\- ='"{},]+/)
+        stripSpecials(cmd).split(/[/\\._\- =,]+/)
           .map(w => w.toLowerCase())
           .filter(w => w.length > 2 && !STOP.has(w))
       )]
@@ -28,7 +29,7 @@ function tokenize(sk) {
     // Otherwise just use the command name
     return first && first.length > 2 ? [first] : []
   }
-  return [...new Set(sanitizeFts5(raw).split(/[/\\._\- ='"{},]+/).map(w => w.toLowerCase()).filter(w => w.length > 2))]
+  return [...new Set(stripSpecials(raw).split(/[/\\._\- =,]+/).map(w => w.toLowerCase()).filter(w => w.length > 2 && !STOP.has(w)))]
 }
 
 const STOP = new Set(["the", "and", "for", "not", "with", "from", "this", "that"])
