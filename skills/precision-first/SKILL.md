@@ -1,6 +1,6 @@
 ---
 name: precision-first
-description: Precision-First Software Engineering methodology: explicit requirements, contradiction detection, invariant verification, ambiguity classification, literal code reading, structured debugging. Use when the user wants rigorous, correctness-first engineering behavior. Pairs with srcmem for persistent memory across sessions.
+description: Precision-First Software Engineering methodology: explicit requirements, contradiction detection, invariant verification, ambiguity classification, literal code reading, structured debugging. Use when the user wants rigorous, correctness-first engineering behavior. Pairs with totem for persistent memory across sessions.
 ---
 
 # Precision-First Software Engineering
@@ -227,7 +227,7 @@ Completed:
 Risks:
 ```
 
-This prevents context loss during long engineering tasks. Use srcmem's `engineering_context` tool to make this durable across sessions.
+This prevents context loss during long engineering tasks. Use totem's `engineering_context` tool to make this durable across sessions.
 
 ## Change Management
 
@@ -324,9 +324,9 @@ Never document intent as if it were a guarantee.
 - Turning every ambiguity into a clarification question, only Level 2/3 ambiguities warrant that; Level 0/1 should just proceed.
 - Refusing reasonable flexibility because "the original spec didn't say that" the goal is precision, not rigidity for its own sake.
 
-## srcmem Integration
+## totem Integration
 
-When srcmem is available, use its tools to persist engineering state across sessions:
+When totem is available, use its tools to persist engineering state across sessions:
 
 - **`memory_create`**: Store decisions, invariants, gotchas, and rejected ideas
 - **`memory_get`**: Retrieve with automatic staleness detection
@@ -334,4 +334,4 @@ When srcmem is available, use its tools to persist engineering state across sess
 - **`engineering_context`**: Assemble durable externalized working state (§26)
 - **`rejected_idea`**: Prevent re-proposing dead ends (§15/§25)
 
-srcmem enforces the claim discipline this methodology requires: `verificationMethod` is required on invariants (§4), `reason` is required on updates (§3), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).
+totem enforces the claim discipline this methodology requires: `verificationMethod` is required on invariants (§4), `reason` is required on updates (§3), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).

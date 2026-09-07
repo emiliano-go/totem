@@ -1,4 +1,4 @@
-"""Click CLI for srcmem."""
+"""Click CLI for totem."""
 
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ def _get_conn() -> sqlite3.Connection:
 
 
 @click.group()
-@click.version_option(package_name="srcmem")
+@click.version_option(package_name="totem-mcp")
 def cli() -> None:
-    """srcmem: persistent memory for engineering agents."""
+    """totem: persistent memory for engineering agents."""
 
 
 @cli.command()
@@ -233,6 +233,12 @@ def context(
 
 def main() -> None:
     cli()
+
+
+def mcp_main() -> None:
+    """Entry point for MCP server."""
+    from .server import main as server_main
+    server_main()
 
 
 if __name__ == "__main__":

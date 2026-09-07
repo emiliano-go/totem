@@ -1,4 +1,4 @@
-"""SQLite storage layer for srcmem."""
+"""SQLite storage layer for totem."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS conflicts (
 
 
 def get_db_path() -> Path:
-    return Path.cwd() / ".srcmem" / "srcmem.db"
+    return Path.cwd() / ".totem" / "totem.db"
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:

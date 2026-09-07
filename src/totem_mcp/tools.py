@@ -1,4 +1,4 @@
-"""High-level tool functions for srcmem (§43)."""
+"""High-level tool functions for totem (§43)."""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def memory_update(
         fields["metadata"] = json.dumps(metadata)
 
     update_item_row(conn, id, fields)
-    print(f"[srcmem] Update {id}: {reason}")
+    print(f"[totem] Update {id}: {reason}")
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
 
@@ -194,7 +194,7 @@ def memory_delete(conn: sqlite3.Connection, id: str, reason: str) -> dict:
     if item is None:
         return {"error": f"Item {id} not found"}
     soft_delete(conn, id)
-    print(f"[srcmem] Deleted {id}: {reason}")
+    print(f"[totem] Deleted {id}: {reason}")
     return {"id": id, "status": "deleted"}
 
 

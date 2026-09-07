@@ -1,4 +1,4 @@
-"""MCP server exposing srcmem tools (§43)."""
+"""MCP server exposing totem tools (§43)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .tools import (
     memory_update,
 )
 
-mcp = FastMCP("srcmem")
+mcp = FastMCP("totem")
 
 
 def _get_conn() -> sqlite3.Connection:

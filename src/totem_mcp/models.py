@@ -1,4 +1,4 @@
-"""Pydantic models for srcmem memory items."""
+"""Pydantic models for totem memory items."""
 
 from __future__ import annotations
 
