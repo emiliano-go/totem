@@ -80,7 +80,9 @@ Before moving on:
 - Store final decisions, command outcomes, and new invariants
 - If you had a `task:` tagged memory, update or delete it
 - Store any commands that worked/failed with `cmd:` prefix
+- Store an architecture summary of what you built (see below)
 
+**Store an invariant for the work you did:**
 ```
 memory_create_tool(
   type="invariant",
@@ -88,6 +90,28 @@ memory_create_tool(
   statement="Every auth server must have these 4 endpoints",
   tags=["auth", "api", "invariant"],
   metadata={"verificationMethod": "curl test all 4 endpoints", "condition": "All return correct status codes"}
+)
+```
+
+**Store an architecture summary of what you built:**
+```
+memory_create_tool(
+  type="invariant",
+  title="architecture: config_store",
+  statement="ConfigStore wraps Vec<(String,String)> with HashMap index. get_value() returns Option<&str>. Numeric keys use u64 (f64 lacks Hash+Eq).",
+  tags=["architecture:config_store", "rust"],
+  metadata={"verificationMethod": "cargo check", "condition": "zero warnings"}
+)
+```
+
+**Store measurable outcomes (if any):**
+```
+memory_create_tool(
+  type="gotcha",
+  title="outcome: parse_batch early exit",
+  statement="convert_batch() breaks on first failure. Exit code 2 = partial success. Partial output is valid — don't re-run from scratch.",
+  tags=["outcome:mdtool", "performance"],
+  metadata={"impact": "O(n) → O(first_failure)"}
 )
 ```
 
@@ -129,6 +153,8 @@ memory_update_tool(id="...", reason="confidence lowered after discovering edge c
 
 - `task:<name>`: In-progress work. Query with `memory_tasks_tool`.
 - `cmd:<command>`: Command outcomes. Query with `memory_commands_tool`.
+- `architecture:<module>`: Structural facts about a module. Use for codebase documentation.
+- `outcome:<what>`: Measurable results. Use for performance wins, bug fix impact, etc.
 - Use domain tags (`auth`, `rust`, `api`) for search and context assembly.
 
 ## Hybrid memory

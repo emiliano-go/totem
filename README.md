@@ -37,7 +37,7 @@ AI coding agents lose engineering context between sessions. They re-discover the
 - **Export/import**: move memories between machines or seed a new project from an existing one
 - **Agent integration**: bundles AGENTS.md and SKILL.md for automatic agent instruction setup
 - **MCP server**: 14 tools exposed via Model Context Protocol
-- **CLI**: 15 commands for manual operations
+- **CLI**: 14 commands for manual operations
 - **Auto-init**: agent config installed automatically on first tool call
 
 ## Install
@@ -240,7 +240,7 @@ All tools return JSON strings. Every tool accepts an optional `project` paramete
 | `memory_export_tool` | Export all memories and conflicts as portable JSON |
 | `memory_import_tool` | Import memories from an export dict (skips duplicate IDs) |
 
-## CLI commands (15)
+## CLI commands (14)
 
 All commands accept `--project <path>` to override workspace scoping.
 

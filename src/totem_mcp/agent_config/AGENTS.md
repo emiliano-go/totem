@@ -27,6 +27,7 @@ These are not suggestions. Follow them on every task.
 9. Store what was learned: new gotchas, decisions, invariants discovered
 10. If you were working on a `task:` tagged item, update or delete it
 11. Store any command outcomes (worked/failed) with `cmd:` tag prefix
+12. **After completing a task**, store an architecture summary: what you built, key structural decisions, and any measurable outcomes. Use `architecture:<module>` or `outcome:<what>` tags.
 
 ## Conventions
 
@@ -34,6 +35,8 @@ These are not suggestions. Follow them on every task.
 
 - `task:<name>`: In-progress work. Use `memory_tasks_tool` to list active tasks.
 - `cmd:<command>`: Command outcomes. Use `memory_commands_tool` to list known commands.
+- `architecture:<module>`: Structural facts about a module. Use for codebase documentation.
+- `outcome:<what>`: Measurable results. Use for performance wins, bug fix impact, etc.
 
 ### Memory types
 
