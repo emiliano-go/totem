@@ -42,15 +42,25 @@ This installs two entry points: `totem` (CLI) and `totem-mcp` (MCP server).
 
 ## Add to your agent
 
-The fastest way to add totem to your agent:
-
+**Claude Code:**
 ```bash
-# Claude Code
 claude mcp add totem -- uvx totem-mcp
 ```
 
-**Claude Desktop / Cursor / Windsurf** (add to config):
+**opencode** (add to `~/.config/opencode/opencode.json`):
+```json
+{
+  "mcp": {
+    "totem": {
+      "type": "local",
+      "command": ["uvx", "totem-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
 
+**Claude Desktop / Cursor / Windsurf** (add to config):
 ```json
 {
   "mcpServers": {
@@ -63,7 +73,6 @@ claude mcp add totem -- uvx totem-mcp
 ```
 
 **VS Code** (add to `.vscode/mcp.json`):
-
 ```json
 {
   "servers": {
@@ -76,7 +85,7 @@ claude mcp add totem -- uvx totem-mcp
 }
 ```
 
-**Project-scoped** (Claude Code / Cursor, checked into repo):
+**Project-scoped** (Claude Code / Cursor / opencode, checked into repo):
 
 The included `.mcp.json` handles this automatically. Just open your project and the agent picks it up.
 
