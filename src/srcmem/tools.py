@@ -130,3 +130,57 @@ def memory_get(
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+def memory_update(
+    conn: sqlite3.Connection,
+    id: str,
+    reason: str,
+    title: str | None = None,
+    statement: str | None = None,
+    tags: list[str] | None = None,
+    status: str | None = None,
+    confidence: float | None = None,
+    importance: float | None = None,
+    evidence: list[dict] | None = None,
+    metadata: dict | None = None,
+) -> dict | None:
+    """Update a memory item (§43 memory_update). reason is required."""
+    if not reason:
+        raise ValueError("reason is required for updates (§3)")
+
+    item = get_item(conn, id)
+    if item is None:
+        return None
+
+    fields: dict = {"updated_at": _now()}
+    if title is not None:
+        fields["title"] = title
+    if statement is not None:
+        fields["statement"] = statement
+    if tags is not None:
+        if not tags:
+            raise ValueError("At least one tag is required")
+        fields["tags"] = str(tags) if isinstance(tags, str) else json.dumps(tags)
+    if status is not None:
+        fields["status"] = status
+    if confidence is not None:
+        if not (0 <= confidence <= 1):
+            raise ValueError("confidence must be in [0, 1]")
+        fields["confidence"] = confidence
+    if importance is not None:
+        if not (0 <= importance <= 1):
+            raise ValueError("importance must be in [0, 1]")
+        fields["importance"] = importance
+    if evidence is not None:
+        parsed = [Evidence.model_validate(e) for e in evidence]
+        fields["evidence"] = json.dumps(
+            [e.model_dump(by_alias=True) for e in parsed]
+        )
+    if metadata is not None:
+        fields["metadata"] = json.dumps(metadata)
+
+    update_item_row(conn, id, fields)
+    print(f"[srcmem] Update {id}: {reason}")
+    updated = get_item(conn, id)
+    return updated.model_dump(by_alias=True) if updated else None
