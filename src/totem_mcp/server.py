@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 from typing import Any
 
 import turso
@@ -26,10 +28,58 @@ from .tools import (
 
 mcp = FastMCP("totem")
 
+_agent_config_done = False
+
+
+def _auto_init_agent_config(project_dir: Path) -> None:
+    """Copy agent config files on first use. Idempotent."""
+    global _agent_config_done
+    if _agent_config_done:
+        return
+    _agent_config_done = True
+
+    agent_config_dir = Path(__file__).parent / "agent_config"
+    if not agent_config_dir.exists():
+        return
+
+    agents_src = agent_config_dir / "AGENTS.md"
+    skill_src = agent_config_dir / "SKILL.md"
+
+    # opencode: append AGENTS.md, create SKILL.md
+    opencode_dir = Path.home() / ".config" / "opencode"
+    if agents_src.exists():
+        opencode_agents = opencode_dir / "AGENTS.md"
+        opencode_dir.mkdir(parents=True, exist_ok=True)
+        src_content = agents_src.read_text()
+        if opencode_agents.exists():
+            dst_content = opencode_agents.read_text()
+            if "## totem Memory System" not in dst_content:
+                opencode_agents.write_text(dst_content.rstrip() + "\n\n" + src_content)
+        else:
+            shutil.copy2(agents_src, opencode_agents)
+    if skill_src.exists():
+        skills_dir = opencode_dir / "skills" / "totem"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(skill_src, skills_dir / "SKILL.md")
+
+    # Claude Code: append to project root AGENTS.md
+    if agents_src.exists():
+        claude_agents = project_dir / "AGENTS.md"
+        src_content = agents_src.read_text()
+        if claude_agents.exists():
+            dst_content = claude_agents.read_text()
+            if "## totem Memory System" not in dst_content:
+                claude_agents.write_text(dst_content.rstrip() + "\n\n" + src_content)
+        else:
+            shutil.copy2(agents_src, claude_agents)
+
 
 def _get_conn(project: str | None = None) -> turso.Connection:
     conn = connect(project=project)
     init_db(conn)
+    # Auto-init agent config on first tool call
+    from .db import get_db_path
+    _auto_init_agent_config(get_db_path(project).parent.parent)
     return conn
 
 

@@ -38,6 +38,7 @@ AI coding agents lose engineering context between sessions. They re-discover the
 - **Agent integration**: bundles AGENTS.md and SKILL.md for automatic agent instruction setup
 - **MCP server**: 14 tools exposed via Model Context Protocol
 - **CLI**: 15 commands for manual operations
+- **Auto-init**: agent config installed automatically on first tool call
 
 ## Install
 
@@ -58,7 +59,7 @@ This installs two entry points: `totem` (CLI) and `totem-mcp` (MCP server).
 
 ## Setup for your agent
 
-Two steps: (1) add the MCP server, (2) run `totem init` to install agent instructions.
+Two steps: (1) add the MCP server, (2) run `totem init` once per project.
 
 ### Step 1: Add the MCP server
 
@@ -109,19 +110,20 @@ claude mcp add totem -- uvx totem-mcp
 
 The included `.mcp.json` handles this automatically. Just open your project and the agent picks it up.
 
-### Step 2: Install agent instructions
+### Step 2: Use it
 
+That's it. The first time you call any totem tool, it automatically:
+- Creates `.totem/` in your project
+- Copies AGENTS.md + SKILL.md to `~/.config/opencode/` (for opencode)
+- Appends to `./AGENTS.md` in your project root (for Claude Code)
+
+No manual init needed. The MCP server handles everything on first use.
+
+If you prefer to set up manually:
 ```bash
-totem init
+totem init          # creates .totem/ + agent config
+totem init --project /path/to/other  # for a different project
 ```
-
-This creates `.totem/totem.db` and appends totem's behavioral rules to your agent config:
-- **opencode**: appends to `~/.config/opencode/AGENTS.md`, creates `~/.config/opencode/skills/totem/SKILL.md`
-- **Claude Code**: appends to `AGENTS.md` in your project root
-
-Without this step, the MCP server works but the agent won't know *when* to use it. The instructions teach agents to check memories on session start, store discoveries mid-task, and save learnings on completion.
-
-You can also call `totem_init_tool` from within the agent (MCP) to do the same thing.
 
 ## Agent instructions
 
