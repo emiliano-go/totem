@@ -61,3 +61,26 @@ class MemoryItem(BaseModel):
     metadata: dict[str, Any] | None = None
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_type_specific_metadata(self) -> MemoryItem:
+        meta = self.metadata or {}
+        if self.type == MemoryType.INVARIANT:
+            if "verificationMethod" not in meta:
+                msg = "Invariant items require 'verificationMethod' in metadata (§41)"
+                raise ValueError(msg)
+            if "condition" not in meta:
+                msg = "Invariant items require 'condition' in metadata (§41)"
+                raise ValueError(msg)
+        elif self.type == MemoryType.DECISION:
+            if "rationale" not in meta:
+                msg = "Decision items require 'rationale' in metadata (§41)"
+                raise ValueError(msg)
+        elif self.type == MemoryType.REJECTED_IDEA:
+            if "proposal" not in meta:
+                msg = "Rejected idea items require 'proposal' in metadata (§41)"
+                raise ValueError(msg)
+            if "reasonRejected" not in meta:
+                msg = "Rejected idea items require 'reasonRejected' in metadata (§41)"
+                raise ValueError(msg)
+        return self
