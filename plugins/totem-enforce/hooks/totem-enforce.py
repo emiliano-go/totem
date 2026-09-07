@@ -162,8 +162,8 @@ def main() -> None:
 
     reason = (
         f"Totem has memory about this. Use {redirect} first. "
-        f"Only {tool_name} the codebase if memory returns nothing relevant. "
-        f"Do not bypass by using bash to run {tool_name} indirectly."
+        f"You will be able to {tool_name} the file after checking memory "
+        f"(only if memory returns nothing relevant). Do not bypass by using bash."
     )
 
     # Output JSON decision (works for Claude Code and Kimi Code)

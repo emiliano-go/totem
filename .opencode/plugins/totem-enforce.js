@@ -81,7 +81,7 @@ export default async ({ directory } = {}) => {
       let redir = "memory_search_tool"
       if (t === "read") redir = "engineering_context_tool"
       if (t === "bash") redir = "memory_commands_tool"
-      throw new Error(`Totem has memory about this. Use ${redir} first. Only ${t} the codebase if memory returns nothing relevant. Do not bypass by using bash to run ${t} indirectly.`)
+      throw new Error(`Totem has memory about this. Use ${redir} first. You will be able to ${t} the file after checking memory (only if memory returns nothing relevant). Do not bypass by using bash.`)
     },
     "tool.execute.after": async (inp, out) => {
       if (inp.tool === "read" && out.args?.filePath) storeImpl(dir, out.args.filePath)
