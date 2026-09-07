@@ -18,3 +18,13 @@ def read_range(path: Path, start_line: int, end_line: int) -> str | None:
     if start_line < 1 or end_line > len(lines) or start_line > end_line:
         return None
     return "".join(lines[start_line - 1 : end_line])
+
+
+def check_staleness(
+    path: Path, start_line: int, end_line: int, stored_hash: str
+) -> bool:
+    """Return True if evidence is stale (hash mismatch or unreadable)."""
+    content = read_range(path, start_line, end_line)
+    if content is None:
+        return True
+    return hash_content(content) != stored_hash
