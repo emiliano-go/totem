@@ -22,3 +22,14 @@ class MemoryStatus(str, Enum):
     POTENTIALLY_STALE = "potentially_stale"
     INVALIDATED = "invalidated"
     DELETED = "deleted"
+
+
+class Evidence(BaseModel):
+    path: str
+    start_line: int = Field(alias="startLine")
+    end_line: int = Field(alias="endLine")
+    content_hash: str = Field(alias="contentHash")
+    commit: str | None = None
+    captured_at: str = Field(alias="capturedAt")
+
+    model_config = {"populate_by_name": True}
