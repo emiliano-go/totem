@@ -1,6 +1,6 @@
 # totem
 
-OpenCode enforcement plugin for the [totem](https://github.com/emiliano-go/totem) memory system. Forces agents to search totem memory before reading, grepping, or running bash commands.
+Agent enforcement plugin for the [totem](https://github.com/emiliano-go/totem) memory system. Forces agents to search totem memory before reading, grepping, or running bash commands.
 
 ## Install
 
@@ -9,7 +9,7 @@ npm install totem
 ```
 
 This installs:
-- The opencode enforcement plugin (auto-loaded by opencode)
+- Enforcement plugins for OpenCode, Claude Code, and Kimi Code (auto-configured by `npx totem`)
 - The `totem-mcp` Python MCP server (auto-installed via uvx or pip)
 
 ## How it works

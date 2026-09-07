@@ -1,0 +1,39 @@
+name: Publish npm
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  publish_npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: plugins/totem-enforce
+
+      - name: Sync version from pyproject.toml
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          npm version "$VERSION" --no-git-tag-version
+        working-directory: plugins/totem-enforce
+
+      - name: Publish to npm
+        run: npm publish --access public
+        working-directory: plugins/totem-enforce
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,8 +1,15 @@
 {
-  "name": "totem",
-  "version": "0.2.1",
-  "description": "Persistent memory layer for engineering agents (opencode plugin + MCP server)",
-  "keywords": ["opencode-plugin", "opencode", "totem", "memory", "mcp", "agent"],
+  "name": "@emiliano-go/totem",
+  "version": "0.2.2",
+  "description": "Agent enforcement plugin for totem memory system (OpenCode, Claude Code, Kimi Code)",
+  "keywords": [
+    "opencode-plugin",
+    "opencode",
+    "totem",
+    "memory",
+    "mcp",
+    "agent"
+  ],
   "author": "Emiliano Gandini Outeda <emiliano.gandini@protonmail.com>",
   "license": "MIT",
   "main": ".opencode/plugins/totem-enforce.js",
@@ -12,6 +19,10 @@
   "files": [
     ".opencode/",
     "bin/",
+    "hooks/",
+    "claude-settings.json",
+    "kimi-hooks.toml",
+    "kimi.plugin.json",
     "README.md",
     "LICENSE"
   ],
@@ -20,5 +31,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@emiliano-go/totem": "^0.2.2"
   }
 }

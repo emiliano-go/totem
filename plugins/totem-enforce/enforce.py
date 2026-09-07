@@ -3,14 +3,23 @@
 
 Used by: OpenCode, Claude Code, Kimi Code.
 Smart blocking: only block if memory is non-empty AND related to the query.
+Detects sub-commands in bash (grep, find, cat, etc.) and searches content, not just cmd: tags.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Sub-commands that search/read file content
+SUBCMDS = re.compile(
+    r"^(grep|find|cat|head|tail|wc|sort|uniq|awk|sed|less|more|diff|comm|xargs|file|rg|ag|ack|jq)$"
+)
+STOP_WORDS = {"the", "and", "for", "not", "with", "from", "this", "that"}
+FTS5_SPECIAL = re.compile(r'[: "+*^()~]')
 
 
 def get_state_path() -> Path:
@@ -39,21 +48,42 @@ def save_state(state: dict) -> None:
         pass
 
 
-def check_memory(query: str, project_dir: str) -> bool:
+def check_memory(query: str, project_dir: str, *, use_cmd_tag: bool = True) -> bool:
     """Check if totem has memory related to this query."""
     try:
-        result = subprocess.run(
-            ["totem", "search", "--query", query, "--limit", "1", "--project", project_dir],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        cmd = ["totem", "search", "--query", query, "--limit", "1", "--project", project_dir]
+        if use_cmd_tag:
+            cmd.extend(["--tags", f"cmd:{query}"])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
             return False
         items = json.loads(result.stdout) if result.stdout.strip() else []
         return len(items) > 0
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
         return False  # Fail open
+
+
+def tokenize_bash(command: str) -> list[str]:
+    """Extract meaningful words from a bash command.
+
+    For sub-commands (grep, find, cat, etc.), returns words from the full command.
+    For other commands, returns just the command name.
+    """
+    cmd = command.strip()
+    # Strip leading cd/chains
+    cmd = re.sub(r"^cd\s+\S+\s*&&\s*", "", cmd)
+    cmd = re.sub(r"^cd\s+\S+\s*;\s*", "", cmd)
+    parts = cmd.split()
+    if not parts:
+        return []
+    first = parts[0].split("/")[-1].lower()
+
+    if SUBCMDS.match(first):
+        # Sub-command: tokenize the full command
+        sanitized = FTS5_SPECIAL.sub(" ", cmd)
+        words = [w.lower() for w in sanitized.split() if len(w) > 2 and w.lower() not in STOP_WORDS]
+        return list(dict.fromkeys(words))  # dedupe, preserve order
+    return [first] if len(first) > 2 else []
 
 
 def build_search_key(tool_name: str, tool_input: dict) -> str:
@@ -99,7 +129,19 @@ def main() -> None:
         sys.exit(0)  # Allow - already searched
 
     # Check memory
-    has_memory = check_memory(search_key, project_dir)
+    if tool_name in ("Bash", "bash"):
+        command = tool_input.get("command", "")
+        words = tokenize_bash(command)
+        has_memory = False
+        for w in words:
+            # Sub-command args: search general memory. Command names: search cmd: tags
+            first_word = command.strip().split()[0].split("/")[-1].lower() if command.strip() else ""
+            is_subcmd = bool(SUBCMDS.match(first_word))
+            if check_memory(w, project_dir, use_cmd_tag=not is_subcmd):
+                has_memory = True
+                break
+    else:
+        has_memory = check_memory(search_key, project_dir)
     if not has_memory:
         sys.exit(0)  # No memory → allow
 
