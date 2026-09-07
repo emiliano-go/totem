@@ -208,3 +208,26 @@ def memory_list(
     """List memory items with optional filters (§43 memory_list)."""
     items = list_items(conn, type_=type, tags=tags, status=status, limit=limit)
     return [item.model_dump(by_alias=True) for item in items]
+
+
+def memory_search(
+    conn: sqlite3.Connection,
+    query: str,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    include_stale: bool = False,
+    limit: int = 20,
+) -> list[dict]:
+    """Hybrid tag + full-text search (§43 memory_search)."""
+    items = search_fts(conn, query, types=types, tags=tags, include_stale=include_stale, limit=limit)
+    results = []
+    for item in items:
+        warnings: list[str] = []
+        for ev in item.evidence:
+            if check_staleness(Path(ev.path), ev.start_line, ev.end_line, ev.content_hash):
+                warnings.append(f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}")
+        d = item.model_dump(by_alias=True)
+        if warnings:
+            d["warnings"] = warnings
+        results.append(d)
+    return results
