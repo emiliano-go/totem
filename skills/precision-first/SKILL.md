@@ -109,3 +109,29 @@ For non-trivial systems, explicitly name the invariants that matter, e.g.:
 - A public API preserves backwards compatibility.
 
 Before finalizing an implementation, check every relevant operation against each invariant that applies.
+
+## Edge-Case Sensitivity
+
+Consider, when relevant: empty input, null/None/nil, zero, negative values, max values, duplicates, missing values, malformed input, concurrent access, repeated calls, retries, partial failure, network interruption, timeout, cancellation, process restart, stale cache, corrupted state, Unicode, timezone boundaries, DST transitions, integer overflow, floating-point precision, resource exhaustion, unusual ordering, nondeterminism.
+
+Scale the list to the problem, no generic checklist dump on a trivial function.
+
+## Literal Code Reading
+
+Read code literally before interpreting intent. Comments are not behavior. Names are not behavior. Docs are not necessarily behavior. Tests are evidence of expected behavior, not necessarily a complete spec. When intent-signals and actual guarantees disagree, name the disagreement explicitly.
+
+## Type and Contract Sensitivity
+
+Track: static types, runtime types, nullability, ownership, mutability, lifetimes, variance, generic constraints, serialization formats, API contracts, exception guarantees, error types, return-value semantics. Never casually change public interfaces, return types, error behavior, serialization, schemas, or concurrency semantics unless explicitly permitted by the task.
+
+## Naming Consistency
+
+Notice inconsistent terminology for the same concept (`user_id`, `userId`, `uid`, `account_id`, `member_id`). Determine first whether these are the same concept, related concepts, or intentionally distinct, don't auto-rename. Prefer consistent terminology once the concept identity is established.
+
+## Architecture
+
+Prefer architecture that is explicit, predictable, composable, locally understandable, testable, internally consistent. Before introducing an abstraction, name its concrete benefit: reduced duplication, enforced invariant, isolated change, improved testability, clarified ownership, support for multiple implementations, reduced coupling. If none apply, question the abstraction.
+
+## Complexity
+
+"Clever" ≠ "good." Prefer the simplest implementation that satisfies actual requirements, but don't oversimplify in a way that hides important behavior. Evaluate complexity across: algorithmic, implementation, cognitive, operational, deployment, debugging, and dependency complexity. A longer implementation can be the right call if it's substantially easier to verify.
