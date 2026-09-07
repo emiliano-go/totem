@@ -47,6 +47,9 @@ def _serialize_item(item) -> str:
     lines.append(f"  Tags: {', '.join(item.tags)}")
     lines.append(f"  Confidence: {item.confidence} | Importance: {item.importance}")
     lines.append(f"  Status: {item.status.value}")
+    if item.evidence:
+        refs = ", ".join(f"{ev.path}:{ev.start_line}-{ev.end_line}" for ev in item.evidence)
+        lines.append(f"  Evidence: {refs}")
     if item.metadata:
         for k, v in item.metadata.items():
             lines.append(f"  {k}: {v}")

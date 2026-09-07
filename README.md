@@ -343,10 +343,12 @@ Core fields on every `MemoryItem`:
 | `status` | enum | `active`, `potentially_stale`, `invalidated`, `deleted` |
 | `confidence` | float | 0 to 1, default 1.0 |
 | `importance` | float | 0 to 1, default 0.5 |
-| `evidence` | list[Evidence] | Linked source code with content hashes |
+| `evidence` | list[Evidence] | Linked source code with content hashes. Shows as `path:start-end` in context output, letting agents jump directly to the relevant code. |
 | `metadata` | dict? | Type-specific keys (see memory types above) |
 
-Evidence entries link to source code ranges with SHA256 hashes for staleness detection.
+Evidence entries link to source code ranges with SHA256 hashes. Two purposes:
+1. **Staleness detection**: if the source file changes, the memory is flagged `potentially_stale`
+2. **Direct code access**: agents see `src/lib.rs:8-12` in context output and can `read` those lines without searching
 
 ## Companion skill
 

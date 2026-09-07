@@ -93,16 +93,24 @@ memory_create_tool(
 )
 ```
 
-**Store an architecture summary of what you built:**
+**Store an architecture summary with file references:**
 ```
 memory_create_tool(
   type="invariant",
   title="architecture: config_store",
   statement="ConfigStore wraps Vec<(String,String)> with HashMap index. get_value() returns Option<&str>. Numeric keys use u64 (f64 lacks Hash+Eq).",
   tags=["architecture:config_store", "rust"],
+  evidence=[{
+    "path": "src/lib.rs",
+    "startLine": 8,
+    "endLine": 12,
+    "contentHash": "<sha256>",
+    "capturedAt": "<timestamp>"
+  }],
   metadata={"verificationMethod": "cargo check", "condition": "zero warnings"}
 )
 ```
+Adding evidence lets future agents jump directly to the relevant code instead of searching.
 
 **Store measurable outcomes (if any):**
 ```
