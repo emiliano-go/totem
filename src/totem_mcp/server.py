@@ -9,7 +9,7 @@ import turso
 from mcp.server.fastmcp import FastMCP
 
 from .context import engineering_context
-from .db import connect, init_db
+from .db import connect, init_db, list_task_items, list_command_items
 from .tools import (
     memory_create,
     memory_delete,
@@ -21,6 +21,7 @@ from .tools import (
     memory_search,
     memory_update,
     resolve_conflict,
+    totem_init,
 )
 
 mcp = FastMCP("totem")
@@ -30,6 +31,17 @@ def _get_conn(project: str | None = None) -> turso.Connection:
     conn = connect(project=project)
     init_db(conn)
     return conn
+
+
+@mcp.tool()
+def totem_init_tool(project: str | None = None) -> str:
+    """Initialize totem for a project. Creates .totem/ directory and DB if missing.
+
+    Args:
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    result = totem_init(project=project)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -206,6 +218,38 @@ def memory_recent_tool(limit: int = 5, project: str | None = None) -> str:
 
 
 @mcp.tool()
+def memory_tasks_tool(limit: int = 10, project: str | None = None) -> str:
+    """List in-progress task memories (tagged with task:*).
+
+    Args:
+        limit: Maximum items to return (default 10)
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    conn = _get_conn(project=project)
+    try:
+        items = list_task_items(conn, limit=limit)
+        return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def memory_commands_tool(limit: int = 20, project: str | None = None) -> str:
+    """List command outcome memories (gotchas tagged with cmd:*).
+
+    Args:
+        limit: Maximum items to return (default 20)
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    conn = _get_conn(project=project)
+    try:
+        items = list_command_items(conn, limit=limit)
+        return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
 def resolve_conflict_tool(conflict_id: str, resolution: str, project: str | None = None) -> str:
     """Mark a conflict as resolved.
 
@@ -265,19 +309,21 @@ def engineering_context_tool(
     token_budget: int | None = None,
     types: list[str] | None = None,
     include_stale: bool = False,
+    current_task: str | None = None,
     project: str | None = None,
 ) -> str:
     """Assemble engineering context with §48 output ordering.
 
-    Pipeline: tag match → score → sort → truncate → serialize.
+    Pipeline: tag match -> score -> sort -> truncate -> serialize.
     Conflicts and warnings are NEVER dropped for budget.
 
     Args:
         tags: Tags to match against
-        task: Optional task description
+        task: Optional task description (shown in output header)
         token_budget: Optional token budget for truncation
         types: Filter by memory types
         include_stale: Whether to include potentially stale items
+        current_task: Description of what you're working on right now. Boosts scoring for memories relevant to this task.
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     conn = _get_conn(project=project)
@@ -289,6 +335,7 @@ def engineering_context_tool(
             token_budget=token_budget,
             types=types,
             include_stale=include_stale,
+            current_task=current_task,
         )
         return json.dumps(result, indent=2)
     finally:

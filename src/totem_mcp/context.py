@@ -10,11 +10,28 @@ from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
 
 
-def _score_item(item, tags: list[str]) -> float:
-    """Score = 0.4*tagMatch + 0.3*importance + 0.2*confidence + 0.1*recency."""
+def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> float:
+    """Score = 0.4*tagMatch + 0.3*importance + 0.2*confidence + 0.1*recency + taskSimilarity."""
     tag_match = len(set(item.tags) & set(tags)) / max(len(tags), 1)
     recency = 1.0
-    score = 0.4 * tag_match + 0.3 * item.importance + 0.2 * item.confidence + 0.1 * recency
+
+    # Task similarity: word overlap between task description and item content
+    task_sim = 0.0
+    if task_words:
+        item_words = set(
+            (item.title + " " + item.statement + " " + (item.details or "")).lower().split()
+        )
+        overlap = len(task_words & item_words)
+        if overlap:
+            task_sim = min(overlap / max(len(task_words), 1), 1.0)
+
+    score = (
+        0.3 * tag_match
+        + 0.25 * item.importance
+        + 0.15 * item.confidence
+        + 0.1 * recency
+        + 0.2 * task_sim
+    )
     if item.type == MemoryType.INVARIANT:
         score *= 1.25
     if item.status == MemoryStatus.POTENTIALLY_STALE:
@@ -56,6 +73,7 @@ def engineering_context(
     token_budget: int | None = None,
     types: list[str] | None = None,
     include_stale: bool = False,
+    current_task: str | None = None,
 ) -> dict:
     """Assemble engineering context per §48 output ordering.
 
@@ -64,6 +82,7 @@ def engineering_context(
     Searches both project DB and user DB (~/.local/share/totem/).
     Project items take precedence on ID collision.
     """
+    task_words = set(current_task.lower().split()) if current_task else None
     project_items = list_items(conn, tags=tags, limit=200)
 
     user_items: list = []
@@ -94,7 +113,7 @@ def engineering_context(
             continue
         if item.status == MemoryStatus.POTENTIALLY_STALE and not include_stale:
             continue
-        score = _score_item(item, tags)
+        score = _score_item(item, tags, task_words)
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)

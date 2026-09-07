@@ -420,3 +420,54 @@ def import_items(conn: turso.Connection, items: list[dict]) -> dict:
         insert_item(conn, item)
         imported += 1
     return {"imported": imported, "skipped": skipped}
+
+
+def find_by_title(conn: turso.Connection, title: str) -> MemoryItem | None:
+    """Find an active memory item by exact title match."""
+    row = conn.execute(
+        "SELECT * FROM memory_items WHERE title = ? AND status != 'deleted' LIMIT 1",
+        (title,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_item(row)
+
+
+def list_task_items(conn: turso.Connection, limit: int = 10) -> list[MemoryItem]:
+    """Find items with any tag starting with 'task:'."""
+    rows = conn.execute(
+        """SELECT * FROM memory_items
+           WHERE status != 'deleted'
+           AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value LIKE 'task:%')
+           ORDER BY created_at DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
+def list_command_items(conn: turso.Connection, limit: int = 20) -> list[MemoryItem]:
+    """Find gotcha items with 'cmd:' tag prefix (command outcomes)."""
+    rows = conn.execute(
+        """SELECT * FROM memory_items
+           WHERE status != 'deleted' AND type = 'gotcha'
+           AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value LIKE 'cmd:%')
+           ORDER BY created_at DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
+def init_project(project_dir: Path) -> dict:
+    """Initialize .totem/ directory and return status."""
+    totem_dir = project_dir / ".totem"
+    db_path = totem_dir / "totem.db"
+    already_existed = db_path.exists()
+    totem_dir.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    init_db(conn)
+    conn.close()
+    return {
+        "path": str(totem_dir),
+        "db": str(db_path),
+        "already_existed": already_existed,
+    }

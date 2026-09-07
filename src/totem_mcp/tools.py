@@ -10,6 +10,7 @@ import turso
 
 from .conflicts import detect_conflicts
 from .db import (
+    find_by_title,
     get_all_conflict_rows,
     get_all_conflicts,
     get_all_items,
@@ -91,6 +92,16 @@ def memory_create(
     )
 
     conflicts = detect_conflicts(conn, item)
+
+    # Dedup: warn if title already exists
+    existing = find_by_title(conn, title)
+    dedup_warning = None
+    if existing:
+        dedup_warning = (
+            f"Memory with title '{title}' already exists (id={existing.id}, "
+            f"type={existing.type.value}). Consider updating instead."
+        )
+
     insert_item(conn, item)
 
     warnings = []
@@ -98,6 +109,8 @@ def memory_create(
         warnings.append(
             f"Conflict with {c.item_b}: {c.claim_a} vs {c.claim_b}: {c.condition}"
         )
+    if dedup_warning:
+        warnings.append(dedup_warning)
 
     return {
         "id": item.id,
@@ -287,3 +300,12 @@ def memory_search(
             d["warnings"] = warnings
         results.append(d)
     return results
+
+
+def totem_init(project: str | None = None) -> dict:
+    """Initialize totem for a project: create .totem/, ensure DB exists, return status."""
+    from .db import init_project, get_db_path
+
+    db_path = get_db_path(project)
+    project_dir = db_path.parent.parent
+    return init_project(project_dir)

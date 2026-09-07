@@ -8,7 +8,7 @@ import click
 import turso
 
 from .context import engineering_context
-from .db import connect, init_db
+from .db import connect, init_db, list_items, list_task_items, list_command_items
 from .tools import (
     memory_create,
     memory_delete,
@@ -20,6 +20,7 @@ from .tools import (
     memory_search,
     memory_update,
     resolve_conflict,
+    totem_init,
 )
 
 
@@ -215,6 +216,54 @@ def resolve(ctx: click.Context, conflict_id: str, resolution: str) -> None:
 
 
 @cli.command()
+@click.option("--project", default=None, help="Project root path (auto-detected from git if omitted)")
+def init(project: str | None) -> None:
+    """Initialize totem for this project. Creates .totem/ directory and DB."""
+    from pathlib import Path
+    from .db import get_db_path, init_project
+
+    db_path = get_db_path(project)
+    project_dir = db_path.parent.parent
+    result = init_project(project_dir)
+    if result["already_existed"]:
+        click.echo(f"Totem already initialized at {result['path']}")
+    else:
+        click.echo(f"Initialized totem at {result['path']}")
+
+
+@cli.command()
+@click.option("--limit", default=10, type=int, help="Number of task items (default 10)")
+@click.pass_context
+def tasks(ctx: click.Context, limit: int) -> None:
+    """List in-progress task memories (tagged with task:*)."""
+    conn = _get_conn(project=ctx.obj.get("project"))
+    try:
+        items = list_task_items(conn, limit=limit)
+        if not items:
+            click.echo("No task memories found. Store one with tag 'task:<name>'.")
+            return
+        click.echo(json.dumps([item.model_dump(by_alias=True) for item in items], indent=2))
+    finally:
+        conn.close()
+
+
+@cli.command()
+@click.option("--limit", default=20, type=int, help="Number of command items (default 20)")
+@click.pass_context
+def commands(ctx: click.Context, limit: int) -> None:
+    """List command outcome memories (gotchas tagged with cmd:*)."""
+    conn = _get_conn(project=ctx.obj.get("project"))
+    try:
+        items = list_command_items(conn, limit=limit)
+        if not items:
+            click.echo("No command memories found. Store one with tag 'cmd:<command>' and type gotcha.")
+            return
+        click.echo(json.dumps([item.model_dump(by_alias=True) for item in items], indent=2))
+    finally:
+        conn.close()
+
+
+@cli.command()
 @click.option("--query", required=True)
 @click.option("--types", default=None, help="Comma-separated memory types")
 @click.option("--tags", default=None, help="Comma-separated tags")
@@ -249,10 +298,11 @@ def search(
 
 @cli.command()
 @click.option("--tags", required=True, help="Comma-separated tags")
-@click.option("--task", default=None, help="Task description")
+@click.option("--task", default=None, help="Task description (shown in output header)")
 @click.option("--budget", default=None, type=int, help="Token budget")
 @click.option("--types", default=None, help="Comma-separated memory types")
 @click.option("--include-stale", is_flag=True, default=False)
+@click.option("--current-task", default=None, help="What you're working on right now (boosts relevant memories)")
 @click.pass_context
 def context(
     ctx: click.Context,
@@ -261,6 +311,7 @@ def context(
     budget: int | None,
     types: str | None,
     include_stale: bool,
+    current_task: str | None,
 ) -> None:
     """Assemble engineering context (§48 output ordering)."""
     conn = _get_conn(project=ctx.obj.get("project"))
@@ -274,6 +325,7 @@ def context(
             token_budget=budget,
             types=type_list,
             include_stale=include_stale,
+            current_task=current_task,
         )
         click.echo(json.dumps(result, indent=2))
     finally:
