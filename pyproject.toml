@@ -26,3 +26,6 @@ totem-mcp = "totem_mcp.cli:mcp_main"
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv_build]
+package-data = {"totem_mcp" = ["agent_config/*"]}
