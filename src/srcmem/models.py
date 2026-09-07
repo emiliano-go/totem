@@ -97,3 +97,7 @@ class InvariantData(BaseModel):
     verification_method: str = Field(alias="verificationMethod")
 
     model_config = {"populate_by_name": True}
+
+
+class GotchaData(BaseModel):
+    trigger: str | None = None
