@@ -89,3 +89,11 @@ class MemoryItem(BaseModel):
 class DecisionData(BaseModel):
     alternatives: list[str] | None = None
     rationale: str
+
+
+class InvariantData(BaseModel):
+    condition: str
+    violation_behavior: str | None = Field(default=None, alias="violationBehavior")
+    verification_method: str = Field(alias="verificationMethod")
+
+    model_config = {"populate_by_name": True}
