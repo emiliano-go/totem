@@ -1,10 +1,22 @@
 # totem
 
-[![PyPI version](https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white)](https://pypi.org/project/totem-mcp/)
-[![Python](https://img.shields.io/pypi/pyversions/totem-mcp?logo=python&logoColor=white)](https://pypi.org/project/totem-mcp/)
-[![License](https://img.shields.io/github/license/emiliano-go/totem?logo=github&logoColor=white)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
-[![Stars](https://img.shields.io/github/stars/emiliano-go/totem?logo=github&logoColor=white)](https://github.com/emiliano-go/totem)
+<p align="center">
+  <a href="https://pypi.org/project/totem-mcp/">
+    <img src="https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white&style=for-the-badge" alt="PyPI">
+  </a>
+  <a href="https://pypi.org/project/totem-mcp/">
+    <img src="https://img.shields.io/pypi/pyversions/totem-mcp?logo=python&logoColor=white&style=for-the-badge" alt="Python">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-10AC84?style=for-the-badge" alt="License">
+  </a>
+  <a href="https://modelcontextprotocol.io">
+    <img src="https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=modelcontextprotocol&logoColor=white&style=for-the-badge" alt="MCP">
+  </a>
+  <a href="https://github.com/emiliano-go/totem/stargazers">
+    <img src="https://img.shields.io/github/stars/emiliano-go/totem?logo=github&logoColor=white&style=for-the-badge" alt="Stars">
+  </a>
+</p>
 
 Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local Turso database with staleness detection, conflict detection, full-text search, and structured context assembly.
 
