@@ -184,3 +184,15 @@ def memory_update(
     print(f"[srcmem] Update {id}: {reason}")
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
+
+
+def memory_delete(conn: sqlite3.Connection, id: str, reason: str) -> dict:
+    """Soft-delete a memory item (§43 memory_delete). reason is required."""
+    if not reason:
+        raise ValueError("reason is required for deletion (§3)")
+    item = get_item(conn, id)
+    if item is None:
+        return {"error": f"Item {id} not found"}
+    soft_delete(conn, id)
+    print(f"[srcmem] Deleted {id}: {reason}")
+    return {"id": id, "status": "deleted"}
