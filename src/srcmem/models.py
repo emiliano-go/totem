@@ -108,3 +108,15 @@ class RejectedIdeaData(BaseModel):
     reason_rejected: str = Field(alias="reasonRejected")
 
     model_config = {"populate_by_name": True}
+
+
+class Conflict(BaseModel):
+    item_a: str = Field(alias="itemA")
+    item_b: str = Field(alias="itemB")
+    claim_a: str = Field(alias="claimA")
+    claim_b: str = Field(alias="claimB")
+    condition: str
+    resolution_options: list[str] = Field(alias="resolutionOptions")
+    recommended: str | None = None
+
+    model_config = {"populate_by_name": True}
