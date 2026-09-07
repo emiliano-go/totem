@@ -84,3 +84,8 @@ class MemoryItem(BaseModel):
                 msg = "Rejected idea items require 'reasonRejected' in metadata (§41)"
                 raise ValueError(msg)
         return self
+
+
+class DecisionData(BaseModel):
+    alternatives: list[str] | None = None
+    rationale: str
