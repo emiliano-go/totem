@@ -1,0 +1,21 @@
+[project]
+name = "srcmem"
+version = "0.1.0"
+description = "Persistent memory layer for engineering agents"
+readme = "README.md"
+authors = [
+    { name = "Emiliano Gandini Outeda", email = "emiliano.gandini@protonmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "click>=8.0,<9.0",
+    "mcp>=1.0,<2.0",
+]
+
+[project.scripts]
+srcmem = "srcmem.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
