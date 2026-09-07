@@ -214,3 +214,35 @@ def list_items(
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     return [_row_to_item(row) for row in rows]
+
+
+def search_fts(
+    conn: sqlite3.Connection,
+    query: str,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    include_stale: bool = False,
+    limit: int = 20,
+) -> list[MemoryItem]:
+    fts_query = " OR ".join(query.split())
+    sql = """
+        SELECT m.* FROM memory_items m
+        JOIN memory_items_fts fts ON m.rowid = fts.rowid
+        WHERE memory_items_fts MATCH ?
+          AND m.status != 'deleted'
+    """
+    params: list[Any] = [fts_query]
+    if not include_stale:
+        sql += " AND m.status != 'potentially_stale'"
+    if types:
+        placeholders = ",".join("?" for _ in types)
+        sql += f" AND m.type IN ({placeholders})"
+        params.extend(types)
+    if tags:
+        tag_placeholders = ",".join("?" for _ in tags)
+        sql += f" AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE json_each.value IN ({tag_placeholders}))"
+        params.extend(tags)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_item(row) for row in rows]
