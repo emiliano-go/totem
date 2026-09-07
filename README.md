@@ -1,6 +1,9 @@
 # totem
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/@emiliano-go/totem">
+    <img src="https://img.shields.io/npm/v/@emiliano-go/totem?logo=npm&logoColor=white&style=for-the-badge&cacheSeconds=0" alt="npm">
+  </a>
   <a href="https://pypi.org/project/totem-mcp/">
     <img src="https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white&style=for-the-badge&cacheSeconds=0" alt="PyPI">
   </a>
@@ -15,75 +18,66 @@
   </a>
 </p>
 
-Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local Turso database with staleness detection, conflict detection, full-text search, and structured context assembly.
+Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local database with staleness detection, conflict detection, full-text search, and structured context assembly.
 
 ## Why
 
 AI coding agents lose engineering context between sessions. They re-discover the same gotchas, re-debate the same decisions, and forget invariants that were already established. `totem` persists this knowledge locally and serves it back to agents as structured context, ordered by relevance.
 
-## Features
-
-- **14 memory types**: decision, invariant, gotcha, rejected_idea, assumption, open_question, ambiguity, contract, constraint, hypothesis, observation, bug, architecture, implementation (each with type-specific metadata)
-- **Staleness detection**: SHA256 content hashing on linked evidence; auto-transitions items to `potentially_stale` when source code changes
-- **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges; same-title-different-statement detection
-- **Conflict resolution**: mark conflicts as resolved and pick a winner
-- **Dedup on create**: warns if a memory with the same title already exists
-- **Full-text search**: Turso FTS5 on title, statement, details, and tags
-- **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`; context assembly searches both
-- **Context assembly**: scored pipeline with `current_task` relevance boost, token budget support, 12-section ordering per spec
-- **Task resumption**: tag in-progress work with `task:<name>`, resume across sessions
-- **Command outcomes**: store command results with `cmd:` tag prefix, check before re-running
-- **Workspace scoping**: auto-detects git root for correct DB placement; explicit `--project` override available
-- **Export/import**: move memories between machines or seed a new project from an existing one
-- **Agent integration**: bundles AGENTS.md and SKILL.md for automatic agent instruction setup
-- **MCP server**: 29 tools exposed via Model Context Protocol
-- **CLI**: 14 commands for manual operations
-- **Auto-init**: agent config installed automatically on first tool call
-- **History audit**: append-only log of every create, update, and delete with reason tracking
-- **Tag normalization**: lowercase, trim, spaces to hyphens on write; tags normalized once, not at query time
-- **Evidence kinds**: source, test, doc, config, git, user, runtime, agent (enum, defaults to source)
-
 ## Install
 
 Requires Python 3.13+.
 
-### npm (recommended for opencode users)
-
 ```bash
-npm install totem
+npm install @emiliano-go/totem
+npx @emiliano-go/totem
 ```
 
-This installs the opencode enforcement plugin and auto-installs the Python MCP server.
+The `npx` command auto-installs the Python MCP server and configures enforcement plugins for OpenCode, Claude Code, and Kimi Code.
 
-### From source
+### Supported agents
 
-```bash
-git clone https://github.com/emiliano-go/totem.git
-cd totem
+| Agent | Hook type | Auto-configured? |
+|-------|-----------|-----------------|
+| OpenCode | `tool.execute.before` JS plugin | Yes |
+| Claude Code | `PreToolUse` hooks (`.claude/settings.json`) | Yes |
+| Kimi Code | `PreToolUse` hooks (`~/.kimi-code/config.toml`) | Yes |
 
-# With uv (recommended)
-uv sync
+## Features
 
-# Or with pip
-pip install .
+- **14 memory types** with type-specific metadata validation
+- **29 MCP tools** (14 core + 15 typed wrappers)
+- **Staleness detection** via SHA256 content hashing on evidence
+- **Conflict detection** on overlapping evidence and contradictory claims
+- **Full-text search** via Turso FTS5
+- **Hybrid memory** (project + user databases)
+- **Context assembly** with scored pipeline and token budget
+- **Agent enforcement** blocks reads/grep/bash when memory exists, forces search-first workflow
+- **History audit** on every create, update, and delete
+
+## How it works
+
+```
+Agent reads file for the first time
+  → auto-stores implementation info → done
+
+Agent reads file again (memory exists)
+  → blocked → redirected to memory tools
+  → searches memory → finds context → done
+
+Agent reads file but finds nothing in memory
+  → allowed to read with tool → done
 ```
 
-This installs two entry points: `totem` (CLI) and `totem-mcp` (MCP server).
+## Setup
 
-## Setup for your agent
+### OpenCode
 
-Two steps: (1) add the MCP server, (2) run `totem init` once per project.
+Add to `~/.config/opencode/opencode.json`:
 
-### Step 1: Add the MCP server
-
-**Claude Code:**
-```bash
-claude mcp add totem -- uvx totem-mcp
-```
-
-**opencode** (add to `~/.config/opencode/opencode.json`):
 ```json
 {
+  "plugin": ["@emiliano-go/totem"],
   "mcp": {
     "totem": {
       "type": "local",
@@ -94,97 +88,45 @@ claude mcp add totem -- uvx totem-mcp
 }
 ```
 
-**Claude Desktop / Cursor / Windsurf** (add to config):
-```json
-{
-  "mcpServers": {
-    "totem": {
-      "command": "uvx",
-      "args": ["totem-mcp"]
-    }
-  }
-}
-```
+### Claude Code
 
-**VS Code** (add to `.vscode/mcp.json`):
-```json
-{
-  "servers": {
-    "totem": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": ["totem-mcp"]
-    }
-  }
-}
-```
-
-**Project-scoped** (Claude Code / Cursor / opencode, checked into repo):
-
-The included `.mcp.json` handles this automatically. Just open your project and the agent picks it up.
-
-### Step 2: Use it
-
-That's it. The first time you call any totem tool, it automatically:
-- Creates `.totem/` in your project
-- Copies AGENTS.md + SKILL.md to `~/.config/opencode/` (for opencode)
-- Appends to `./AGENTS.md` in your project root (for Claude Code)
-
-No manual init needed. The MCP server handles everything on first use.
-
-If you prefer to set up manually:
 ```bash
-totem init          # creates .totem/ + agent config
-totem init --project /path/to/other  # for a different project
+claude mcp add totem -- uvx totem-mcp
 ```
 
-## Agent instructions
+### Kimi Code
 
-totem bundles two files that teach your agent how to use the memory system:
+Hooks are auto-configured by `npx @emiliano-go/totem`.
 
-- **AGENTS.md**: Mandatory behavioral rules (check memories on session start, store discoveries mid-task, save learnings on completion)
-- **SKILL.md**: Detailed workflow with code examples for each phase (discovery, mid-task, completion)
+### Manual setup
 
-`totem init` installs these automatically. What it does per agent:
+If you prefer manual configuration:
 
-| Agent | AGENTS.md | SKILL.md |
-|-------|-----------|----------|
-| opencode | Appends to `~/.config/opencode/AGENTS.md` | Creates `~/.config/opencode/skills/totem/SKILL.md` |
-| Claude Code | Appends to `./AGENTS.md` in project root | N/A (uses AGENTS.md only) |
-| Claude Desktop / Cursor | Append to `./AGENTS.md` in project root | N/A |
+```bash
+# Initialize totem in your project
+totem init
 
-AGENTS.md is append-safe: it checks for the `## totem Memory System` marker before writing, so your existing instructions are never overwritten.
-
-### Tag conventions
-
-- `task:<name>`: In-progress work. Query with `memory_tasks_tool` / `totem tasks`.
-- `cmd:<command>`: Command outcomes. Query with `memory_commands_tool` / `totem commands`.
+# For a different project
+totem init --project /path/to/other
+```
 
 ## Quick start
 
-### MCP server
-
-Start the server:
-
-```bash
-totem-mcp
-```
-
-Then use it from your agent. Example tool calls:
+### MCP tools (from your agent)
 
 ```
-# Check what you were working on last session
-memory_recent_tool(limit=5)
-
-# Get full context for a task
-engineering_context_tool(tags=["api", "database"], task="Refactor auth middleware",
-  current_task="Adding JWT refresh endpoint")
-
 # Store a decision
 memory_create_tool(type="decision", title="Use FTS5 for search",
   statement="SQLite FTS5 is sufficient for our search needs",
   tags=["search", "sqlite"],
   metadata={"rationale": "No external dependency needed"})
+
+# Get full context for a task
+engineering_context_tool(tags=["api", "database"],
+  current_task="Adding JWT refresh endpoint")
+
+# Search memory
+memory_search_tool(query="authentication", tags=["auth"])
 
 # Store a command outcome
 memory_create_tool(type="gotcha", title="uv pip install -e . works",
@@ -195,169 +137,96 @@ memory_create_tool(type="gotcha", title="uv pip install -e . works",
 ### CLI
 
 ```bash
-# Initialize totem in your project
-totem init
-
 # Create a memory item
 totem create --type decision --title "Use FTS5 for search" \
   --statement "SQLite FTS5 is sufficient for our search needs" \
-  --tags "search,sqlite" --metadata '{"rationale": "No external search dependency needed"}'
+  --tags "search,sqlite" --metadata '{"rationale": "No external dependency needed"}'
 
-# Get it back
-totem get <ITEM_ID>
+# Search
+totem search --query "FTS5" --tags "sqlite"
 
-# Search (full-text + tags)
-totem search --query "FTS5 search" --tags "sqlite"
+# Assemble context
+totem context --tags "search,sqlite" --current-task "Implementing search" --budget 4096
 
-# List recent items
-totem recent
-
-# List in-progress tasks
-totem tasks
-
-# List command outcomes
-totem commands
-
-# Resolve a conflict
-totem resolve <CONFLICT_ID> --resolution "Kept existing: Use FTS5"
-
-# Assemble context with task relevance
-totem context --tags "search,sqlite" --task "Add fuzzy search" \
-  --current-task "Implementing search for product catalog" --budget 4096
-
-# Export all memories to a file
+# Export/import
 totem export -o backup.json
-
-# Import memories from a file
 totem import backup.json
 ```
 
-## MCP tools (29)
+## Memory types
 
-All tools return JSON strings. Every tool accepts an optional `project` parameter to override workspace scoping.
+| Type | Purpose | Required metadata |
+|------|---------|------------------|
+| `decision` | A choice that was made | `rationale` (recommended) |
+| `invariant` | A rule that must hold | `verificationMethod`, `condition` |
+| `gotcha` | A non-obvious pitfall | (none) |
+| `rejected_idea` | A proposal declined | `proposal`, `reasonRejected` |
+| `assumption` | A claim with epistemic status | `claimCategory`, `basis` |
+| `open_question` | An unresolved question | `question`, `impact`, `blocking` |
+| `ambiguity` | An ambiguous requirement | `question`, `interpretations`, `impact` |
+| `contract` | Observable behavior | `subject` |
+| `constraint` | Implementation restriction | `constraint` |
+| `hypothesis` | Plausible explanation | `hypothesis` |
+| `observation` | Something seen in code | `observation` |
+| `bug` | A defect with state machine | `symptom`, `severity`, `state` |
+| `architecture` | Component mapping | `component`, `responsibility` |
+| `implementation` | Codebase facts | `subject`, `kind`, `path` |
+
+## MCP tools (29)
 
 | Tool | Description |
 |------|-------------|
-| `totem_init_tool` | Initialize totem for a project (creates `.totem/` and DB) |
-| `memory_create_tool` | Create a memory item. Warns if title already exists. |
+| `totem_init_tool` | Initialize totem for a project |
+| `memory_create_tool` | Create a memory item (warns on duplicate title) |
 | `memory_get_tool` | Retrieve by ID with staleness check |
-| `memory_update_tool` | Update any field. Provide `reason` (strongly recommended). |
+| `memory_update_tool` | Update any field (provides audit trail) |
 | `memory_delete_tool` | Soft-delete (requires `reason`) |
-| `memory_list_tool` | Filtered listing with `sort` param (`created_at`, `updated_at`, `importance`) |
-| `memory_recent_tool` | List most recently created memories (default limit 5) |
-| `memory_tasks_tool` | List in-progress task memories (tagged `task:*`) |
-| `memory_commands_tool` | List command outcomes (gotchas tagged `cmd:*`) |
-| `memory_search_tool` | FTS5 full-text search (includes tags) with type/tag filters |
-| `resolve_conflict_tool` | Mark a conflict as resolved with a resolution description |
-| `engineering_context_tool` | Scored context assembly with `current_task` relevance boost |
-| `memory_export_tool` | Export all memories and conflicts as portable JSON |
-| `memory_import_tool` | Import memories from an export dict (skips duplicate IDs) |
-| `decision_create` | Create a decision memory |
-| `invariant_create` | Create an invariant memory |
-| `gotcha_create` | Create a gotcha memory |
-| `rejected_idea_create` | Create a rejected idea memory |
-| `assumption_create` | Create an assumption memory |
-| `open_question_create` | Create an open question memory |
-| `ambiguity_create` | Create an ambiguity memory |
-| `contract_create` | Create a contract memory |
-| `constraint_create` | Create a constraint memory |
-| `hypothesis_create` | Create a hypothesis memory |
-| `observation_create` | Create an observation memory |
-| `bug_create` | Create a bug memory |
-| `architecture_create` | Create an architecture memory |
-| `implementation_create` | Create an implementation memory |
+| `memory_list_tool` | Filtered listing with sort and type/tag filters |
+| `memory_recent_tool` | List recently created memories |
+| `memory_tasks_tool` | List in-progress task memories (`task:*`) |
+| `memory_commands_tool` | List command outcomes (`cmd:*`) |
+| `memory_search_tool` | FTS5 full-text search with type/tag filters |
+| `resolve_conflict_tool` | Mark conflict as resolved |
+| `engineering_context_tool` | Scored context assembly with task relevance |
+| `memory_export_tool` | Export all memories as JSON |
+| `memory_import_tool` | Import memories from JSON (skips duplicates) |
+| `*_create` (15) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
 ## CLI commands (14)
-
-All commands accept `--project <path>` to override workspace scoping.
 
 | Command | Description |
 |---------|-------------|
 | `totem init` | Initialize totem and install agent instructions |
 | `totem create` | Create a new memory item |
-| `totem get <ID>` | Retrieve by ID (`--no-evidence` skips staleness check) |
-| `totem update <ID>` | Update an item (`--reason` optional, defaults to "maintenance") |
+| `totem get <ID>` | Retrieve by ID |
+| `totem update <ID>` | Update an item |
 | `totem delete <ID>` | Soft-delete (requires `--reason`) |
-| `totem list` | List with `--sort` (`created_at`, `updated_at`, `importance`) and filters |
-| `totem recent` | List most recently created memories (`--limit` default 5) |
-| `totem tasks` | List in-progress task memories (tagged `task:*`) |
-| `totem commands` | List command outcomes (gotchas tagged `cmd:*`) |
-| `totem resolve <ID>` | Mark a conflict as resolved (`--resolution` required) |
-| `totem search` | Full-text search (includes tags) with type/tag filters |
-| `totem export` | Export all memories and conflicts as JSON (`-o` for file output) |
-| `totem import <FILE>` | Import memories from a JSON export file |
-| `totem context` | Assemble scored context for a task |
-
-All commands output JSON to stdout.
-
-## Workspace scoping
-
-totem auto-detects your project root using `git rev-parse --show-toplevel`. The `.totem/totem.db` file is created relative to the git root, not your current working directory. This means the MCP server works correctly regardless of which subdirectory it starts in.
-
-To override auto-detection, pass `--project <path>` on any CLI command or `project` parameter on any MCP tool.
-
-## Memory types
-
-Each type captures a different kind of engineering knowledge:
-
-| Type | Purpose | Metadata |
-|------|---------|----------|
-| `decision` | A choice that was made | `rationale` (optional, but strongly recommended: explain WHY) |
-| `invariant` | A rule that must hold | `verificationMethod`, `condition` (required) |
-| `gotcha` | A non-obvious pitfall discovered | (none) |
-| `rejected_idea` | A proposal that was considered and declined | `proposal`, `reasonRejected` (required) |
-| `assumption` | A claim with a specific epistemic status | `claimCategory` (fact/assumption/hypothesis/guarantee), `basis` (required) |
-| `open_question` | An unresolved question | `question`, `impact` (low/medium/high/critical), `blocking` (required) |
-| `ambiguity` | An ambiguous requirement | `question`, `interpretations` (list), `impact` (required) |
-| `contract` | Observable behavior of functions/APIs | `subject` (required), `inputs`, `outputs`, `errors`, `sideEffects`, `compatibility` |
-| `constraint` | Implementation restrictions | `constraint` (required), `scope`, `severity` (must/should/prefer) |
-| `hypothesis` | Plausible explanation needing verification | `hypothesis` (required), `evidenceFor`, `evidenceAgainst`, `confidence`, `verificationPlan` |
-| `observation` | Something seen in code or runtime | `observation` (required), `context`, `confidence` |
-| `bug` | A defect with state machine | `symptom` (required), `severity`, `state` (open/confirmed/fixed/verified), `expected`, `actual`, `reproduction`, `suspectedCause` |
-| `architecture` | Component responsibility mapping | `component` (required), `responsibility` (required), `dependencies`, `owns`, `communicatesWith`, `sourcePaths` |
-| `implementation` | Codebase facts | `subject` (required), `kind` (api/function/module/type/config/schema), `path` (required) |
-
-## Hybrid memory
-
-totem stores memories in two locations:
-
-- **Project memories**: `.totem/totem.db` (in your repo, checked into version control or gitignored)
-- **User memories**: `~/.local/share/totem/totem.db` (personal preferences, global patterns)
-
-`engineering_context` searches both databases, with project memories taking precedence. This means your agent remembers project-specific decisions and your personal coding preferences across all projects.
-
-## Export and import
-
-Move memories between machines or seed a new project:
-
-```bash
-# Export everything from the current project
-totem export -o project-memories.json
-
-# Import into a different project
-cd /path/to/other-project
-totem import ../project-memories.json
-```
-
-Import skips items with duplicate IDs and reports counts of imported vs skipped items.
+| `totem list` | List with filters |
+| `totem recent` | List recently created memories |
+| `totem tasks` | List in-progress task memories |
+| `totem commands` | List command outcomes |
+| `totem resolve <ID>` | Mark conflict as resolved |
+| `totem search` | Full-text search |
+| `totem export` | Export memories as JSON |
+| `totem import <FILE>` | Import memories from JSON |
+| `totem context` | Assemble scored context |
 
 ## Context assembly
 
-The `engineering_context` tool runs a scored pipeline across both project and user memories:
-
 **Scoring formula:**
 ```
-score = 0.3*tag_match + 0.25*importance + 0.15*confidence + 0.1*recency + 0.2*task_similarity
+score = 0.30*tag_match + 0.20*task_similarity + 0.25*importance
+      + 0.15*confidence + 0.10*recency
 ```
 
-Invariants get a 1.25x multiplier. Potentially stale items get a 0.5x penalty. The `current_task` parameter boosts scoring for memories whose content overlaps with your current task description.
+Invariants, constraints, and ambiguities get a 1.25x multiplier. Potentially stale items get a 0.5x penalty.
 
-**Output section order (never truncated):**
+**Output sections (never truncated):**
 
-1. TASK (if provided)
-2. BLOCKING AMBIGUITIES (high/critical impact, always shown)
-3. CONFLICTS (always shown)
+1. TASK
+2. BLOCKING AMBIGUITIES
+3. CONFLICTS
 4. CRITICAL CONSTRAINTS
 5. CRITICAL INVARIANTS
 6. RELEVANT CONTRACTS
@@ -371,61 +240,36 @@ Invariants get a 1.25x multiplier. Potentially stale items get a 0.5x penalty. T
 14. CODEBASE FACTS
 15. OPEN QUESTIONS
 16. REJECTED IDEAS
-17. STALE WARNINGS (always shown)
+17. STALE WARNINGS
 
-Conflicts and warnings are never dropped due to token budget. Item sections truncate when budget is exceeded, with a count of omitted items noted.
+## Workspace scoping
 
-## Data model
+totem auto-detects your project root via `git rev-parse --show-toplevel`. Override with `--project <path>` on any CLI command or `project` parameter on any MCP tool.
 
-Core fields on every `MemoryItem`:
+## Hybrid memory
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | UUID | Auto-generated primary key |
-| `type` | enum | 14 types (see memory types above) |
-| `title` | str | Short title |
-| `statement` | str | The factual claim |
-| `details` | str? | Additional context |
-| `tags` | list[str] | At least one required. Use `task:` or `cmd:` prefix for special types. |
-| `status` | enum | `active`, `potentially_stale`, `invalidated`, `deleted`, `resolved`, `superseded` |
-| `confidence` | float | 0 to 1, default 1.0 |
-| `importance` | float | 0 to 1, default 0.5 |
-| `scope` | str? | Optional scope tag (e.g. "auth", "db", "api") |
-| `evidence` | list[Evidence] | Linked source code with content hashes and kinds |
-| `related_memory_ids` | list[UUID] | Links to related items |
-| `metadata` | dict? | Type-specific keys (see memory types above) |
-| `schema_version` | int | Schema version (currently 3) |
-| `verified_commit` | str? | Git commit where this was last verified |
+- **Project memories**: `.totem/totem.db`
+- **User memories**: `~/.local/share/totem/totem.db`
 
-Evidence entries have:
-- `path`: Source file path
-- `startLine`, `endLine`: Line range
-- `contentHash`: SHA256 for staleness detection
-- `kind`: One of source, test, doc, config, git, user, runtime, agent (default: source)
+`engineering_context` searches both, with project memories taking precedence.
 
-Evidence entries link to source code ranges with SHA256 hashes. Two purposes:
-1. **Staleness detection**: if the source file changes, the memory is flagged `potentially_stale`
-2. **Direct code access**: agents see `src/lib.rs:8-12` in context output and can `read` those lines without searching
+## Tag conventions
+
+- `task:<name>`: In-progress work. Query with `memory_tasks_tool`.
+- `cmd:<command>`: Command outcomes. Query with `memory_commands_tool`.
 
 ## Companion skill
 
-The [`skills/precision-first/`](skills/precision-first/SKILL.md) directory contains a precision-first software engineering methodology designed to pair with `totem`. It covers invariant management, ambiguity classification, contradiction detection, and structured code review workflows.
+The [`skills/precision-first/`](skills/precision-first/SKILL.md) directory contains a precision-first software engineering methodology designed to pair with `totem`.
 
 ## Development
 
 ```bash
-git clone https://github.com/emiliano-go/totem.git
-cd totem
-uv sync
+# Run JS tests
+cd plugins/totem-enforce && node test-tokenize.js
 
-# Run tests (none yet)
-uv run pytest
-
-# Run CLI
-uv run totem --help
-
-# Run MCP server
-uv run totem-mcp
+# Run Python tests
+cd plugins/totem-enforce && python3 test-enforce.py
 ```
 
 ## License

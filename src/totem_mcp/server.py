@@ -44,6 +44,8 @@ def memory_create_tool(
     statement: str,
     tags: list[str],
     details: str | None = None,
+    confidence: float = 1.0,
+    importance: float = 0.5,
     evidence: list[dict[str, Any]] | None = None,
     related_memory_ids: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -57,6 +59,8 @@ def memory_create_tool(
         statement: The factual claim being stored
         tags: At least one tag for categorization
         details: Optional additional details
+        confidence: 0 to 1, default 1.0
+        importance: 0 to 1, default 0.5
         evidence: List of evidence objects with path, startLine, endLine, contentHash
         related_memory_ids: IDs of related memory items
         metadata: Extra metadata. Decision items accept 'rationale' (strongly recommended: explain WHY this decision was made, alternatives considered). Invariant items require 'verificationMethod' and 'condition'
@@ -71,6 +75,8 @@ def memory_create_tool(
                 statement=statement,
                 tags=tags,
                 details=details,
+                confidence=confidence,
+                importance=importance,
                 evidence=evidence,
                 related_memory_ids=related_memory_ids,
                 metadata=metadata,
@@ -104,6 +110,8 @@ def memory_update_tool(
     statement: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
+    confidence: float | None = None,
+    importance: float | None = None,
     evidence: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     project: str | None = None,
@@ -116,7 +124,9 @@ def memory_update_tool(
         title: New title
         statement: New statement
         tags: New tags
-        status: New status (active, potentially_stale, invalidated)
+        status: New status (active, potentially_stale, invalidated, resolved, superseded)
+        confidence: New confidence (0-1)
+        importance: New importance (0-1)
         evidence: New evidence list
         metadata: New metadata
         project: Optional project root path. Auto-detected from git root if omitted.
@@ -131,6 +141,8 @@ def memory_update_tool(
                 statement=statement,
                 tags=tags,
                 status=status,
+                confidence=confidence,
+                importance=importance,
                 evidence=evidence,
                 metadata=metadata,
             )

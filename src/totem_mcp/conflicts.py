@@ -26,7 +26,10 @@ def detect_conflicts(
     1. Evidence overlap: same type + overlapping file range + different statement
     2. Same title: same type + same title + different statement (conceptual contradiction)
     """
-    if new_item.type not in (MemoryType.DECISION, MemoryType.INVARIANT, MemoryType.ASSUMPTION):
+    if new_item.type not in (
+        MemoryType.DECISION, MemoryType.INVARIANT, MemoryType.ASSUMPTION,
+        MemoryType.CONSTRAINT, MemoryType.CONTRACT, MemoryType.ARCHITECTURE,
+    ):
         return []
 
     conflicts: list[Conflict] = []

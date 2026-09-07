@@ -35,14 +35,14 @@ class MemoryStatus(str, Enum):
     INVALIDATED = "invalidated"
     DELETED = "deleted"
     RESOLVED = "resolved"
-    SUPERSeded = "superseded"
+    SUPERSEDED = "superseded"
 
 
 class EvidenceKind(str, Enum):
     SOURCE = "source"
     TEST = "test"
-    DOCUMENTATION = "documentation"
-    CONFIGURATION = "configuration"
+    DOC = "doc"
+    CONFIG = "config"
     GIT = "git"
     USER = "user"
     RUNTIME = "runtime"
@@ -219,5 +219,7 @@ class Conflict(BaseModel):
     condition: str
     resolution_options: list[str] = Field(alias="resolutionOptions")
     recommended: str | None = None
+    resolved_at: str | None = Field(default=None, alias="resolvedAt")
+    resolution: str | None = None
 
     model_config = {"populate_by_name": True}

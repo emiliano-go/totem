@@ -10,7 +10,7 @@ from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
 
 # Statuses to skip in context output
-_SKIP_STATUSES = {MemoryStatus.DELETED, MemoryStatus.RESOLVED, MemoryStatus.SUPERSeded}
+_SKIP_STATUSES = {MemoryStatus.DELETED, MemoryStatus.RESOLVED, MemoryStatus.SUPERSEDED}
 
 # Types that get 1.25x score multiplier (spec §11)
 _BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGUITY}
@@ -34,9 +34,9 @@ def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> fl
     score = (
         0.30 * tag_match
         + 0.20 * task_sim
-        + 0.15 * item.importance
-        + 0.10 * item.confidence
-        + 0.05 * recency
+        + 0.25 * item.importance
+        + 0.15 * item.confidence
+        + 0.10 * recency
     )
     if item.type in _BOOSTED_TYPES:
         score *= 1.25

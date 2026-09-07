@@ -34,7 +34,12 @@ def cli(ctx: click.Context, project: str | None) -> None:
 
 
 @cli.command()
-@click.option("--type", "mem_type", required=True, type=click.Choice(["decision", "invariant", "gotcha", "rejected_idea"]))
+@click.option("--type", "mem_type", required=True, type=click.Choice([
+    "decision", "invariant", "gotcha", "rejected_idea",
+    "assumption", "open_question", "ambiguity", "contract",
+    "constraint", "hypothesis", "observation", "bug",
+    "architecture", "implementation",
+]))
 @click.option("--title", required=True)
 @click.option("--statement", required=True)
 @click.option("--tags", required=True, help="Comma-separated tags")
@@ -98,7 +103,7 @@ def get(ctx: click.Context, item_id: str, no_evidence: bool) -> None:
 @click.option("--title", default=None)
 @click.option("--statement", default=None)
 @click.option("--tags", default=None, help="Comma-separated tags")
-@click.option("--status", default=None, type=click.Choice(["active", "potentially_stale", "invalidated"]))
+@click.option("--status", default=None, type=click.Choice(["active", "potentially_stale", "invalidated", "resolved", "superseded"]))
 @click.option("--confidence", default=None, type=float)
 @click.option("--importance", default=None, type=float)
 @click.option("--evidence", default=None, help="JSON array of evidence objects")
@@ -152,9 +157,14 @@ def delete(ctx: click.Context, item_id: str, reason: str) -> None:
 
 
 @cli.command("list")
-@click.option("--type", "mem_type", default=None, type=click.Choice(["decision", "invariant", "gotcha", "rejected_idea"]))
+@click.option("--type", "mem_type", default=None, type=click.Choice([
+    "decision", "invariant", "gotcha", "rejected_idea",
+    "assumption", "open_question", "ambiguity", "contract",
+    "constraint", "hypothesis", "observation", "bug",
+    "architecture", "implementation",
+]))
 @click.option("--tags", default=None, help="Comma-separated tags")
-@click.option("--status", default=None, type=click.Choice(["active", "potentially_stale", "invalidated"]))
+@click.option("--status", default=None, type=click.Choice(["active", "potentially_stale", "invalidated", "resolved", "superseded"]))
 @click.option("--sort", default="updated_at", type=click.Choice(["created_at", "updated_at", "importance"]), help="Sort field")
 @click.option("--limit", default=50, type=int)
 @click.pass_context

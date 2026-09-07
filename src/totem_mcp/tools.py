@@ -187,35 +187,48 @@ def memory_update(
         return None
 
     fields: dict = {"updated_at": _now()}
+    changes: list[tuple[str, str | None, str | None]] = []  # (field, old, new)
     if title is not None:
+        changes.append(("title", item.title, title))
         fields["title"] = title
     if statement is not None:
+        changes.append(("statement", item.statement, statement))
         fields["statement"] = statement
     if tags is not None:
         if not tags:
             raise ValueError("At least one tag is required")
         tags = _normalize_tags(tags)
+        old_tags = json.dumps(item.tags) if item.tags else "[]"
+        changes.append(("tags", old_tags, json.dumps(tags)))
         fields["tags"] = json.dumps(tags)
     if status is not None:
+        changes.append(("status", item.status.value if item.status else None, status))
         fields["status"] = status
     if confidence is not None:
         if not (0 <= confidence <= 1):
             raise ValueError("confidence must be in [0, 1]")
+        changes.append(("confidence", str(item.confidence), str(confidence)))
         fields["confidence"] = confidence
     if importance is not None:
         if not (0 <= importance <= 1):
             raise ValueError("importance must be in [0, 1]")
+        changes.append(("importance", str(item.importance), str(importance)))
         fields["importance"] = importance
     if evidence is not None:
         parsed = [Evidence.model_validate(e) for e in evidence]
-        fields["evidence"] = json.dumps(
-            [e.model_dump(by_alias=True) for e in parsed]
-        )
+        old_evidence = json.dumps([e.model_dump(by_alias=True) for e in item.evidence]) if item.evidence else "[]"
+        new_evidence = json.dumps([e.model_dump(by_alias=True) for e in parsed])
+        changes.append(("evidence", old_evidence, new_evidence))
+        fields["evidence"] = new_evidence
     if metadata is not None:
+        old_meta = json.dumps(item.metadata) if item.metadata else None
+        changes.append(("metadata", old_meta, json.dumps(metadata)))
         fields["metadata"] = json.dumps(metadata)
 
     update_item_row(conn, id, fields)
     insert_history(conn, id, "updated", reason=reason)
+    for field_name, old_val, new_val in changes:
+        insert_history(conn, id, "updated", field=field_name, old_value=old_val, new_value=new_val, reason=reason)
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
 
