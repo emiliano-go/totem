@@ -10,11 +10,17 @@ import turso
 
 from .conflicts import detect_conflicts
 from .db import (
+    get_all_conflict_rows,
+    get_all_conflicts,
+    get_all_items,
     get_item,
     get_overlapping_items,
+    import_items as db_import_items,
     init_db,
+    insert_conflict,
     insert_item,
     list_items,
+    resolve_conflict as db_resolve_conflict,
     search_fts,
     soft_delete,
     update_item_row,
@@ -216,6 +222,48 @@ def memory_list(
     """List memory items with optional filters (§43 memory_list)."""
     items = list_items(conn, type_=type, tags=tags, status=status, sort=sort, limit=limit)
     return [item.model_dump(by_alias=True) for item in items]
+
+
+def memory_recent(
+    conn: turso.Connection,
+    limit: int = 5,
+) -> list[dict]:
+    """List most recently created memories (§43 memory_recent)."""
+    return memory_list(conn, sort="created_at", limit=limit)
+
+
+def resolve_conflict(
+    conn: turso.Connection,
+    conflict_id: str,
+    resolution: str,
+) -> dict | None:
+    """Mark a conflict as resolved (§45)."""
+    return db_resolve_conflict(conn, conflict_id, resolution)
+
+
+def memory_export(conn: turso.Connection) -> dict:
+    """Export all memories and conflicts as a portable dict."""
+    from .db import SCHEMA_VERSION
+
+    items = get_all_items(conn)
+    conflicts = get_all_conflict_rows(conn)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "exported_at": _now(),
+        "items": [item.model_dump(by_alias=True) for item in items],
+        "conflicts": conflicts,
+    }
+
+
+def memory_import(conn: turso.Connection, data: dict) -> dict:
+    """Import memories from an export dict. Skips duplicate IDs."""
+    items = data.get("items", [])
+    result = db_import_items(conn, items)
+    return {
+        "imported": result["imported"],
+        "skipped": result["skipped"],
+        "total_items": len(items),
+    }
 
 
 def memory_search(

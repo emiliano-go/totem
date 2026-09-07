@@ -29,9 +29,12 @@ AI coding agents lose engineering context between sessions. They re-discover the
 - **Four memory types**: decision, invariant, gotcha, rejected_idea (each with type-specific metadata)
 - **Staleness detection**: SHA256 content hashing on linked evidence; auto-transitions items to `potentially_stale` when source code changes
 - **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges
+- **Conflict resolution**: mark conflicts as resolved and pick a winner
 - **Full-text search**: Turso FTS5 on title, statement, details, and tags
 - **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`. Context assembly searches both.
 - **Context assembly**: scored pipeline with token budget support, section ordering per spec
+- **Workspace scoping**: auto-detects git root for correct DB placement; explicit `--project` override available
+- **Export/import**: move memories between machines or seed a new project from an existing one
 - **MCP server**: expose all tools via Model Context Protocol for agent use
 - **CLI**: full command-line interface for manual operations
 
@@ -137,7 +140,16 @@ totem get <ITEM_ID>
 totem search --query "FTS5 search" --tags "sqlite"
 
 # List recent items
-totem list --sort created_at --limit 5
+totem recent
+
+# Resolve a conflict
+totem resolve <CONFLICT_ID> --resolution "Kept existing: Use FTS5"
+
+# Export all memories to a file
+totem export -o backup.json
+
+# Import memories from a file
+totem import backup.json
 
 # Assemble context for a task
 totem context --tags "search,sqlite" --task "Add fuzzy search" --budget 4096
@@ -145,7 +157,7 @@ totem context --tags "search,sqlite" --task "Add fuzzy search" --budget 4096
 
 ## MCP tools
 
-All tools return JSON strings.
+All tools return JSON strings. Every tool accepts an optional `project` parameter to override workspace scoping.
 
 | Tool | Description |
 |------|-------------|
@@ -154,10 +166,16 @@ All tools return JSON strings.
 | `memory_update_tool` | Update any field. Provide `reason` (strongly recommended for audit trail). |
 | `memory_delete_tool` | Soft-delete (requires `reason`) |
 | `memory_list_tool` | Filtered listing with `sort` param (`created_at`, `updated_at`, `importance`) |
+| `memory_recent_tool` | List most recently created memories (default limit 5) |
 | `memory_search_tool` | FTS5 full-text search (includes tags) with type/tag filters |
+| `resolve_conflict_tool` | Mark a conflict as resolved with a resolution description |
 | `engineering_context_tool` | Scored context assembly; searches project + user DBs |
+| `memory_export_tool` | Export all memories and conflicts as portable JSON |
+| `memory_import_tool` | Import memories from an export dict (skips duplicate IDs) |
 
 ## CLI commands
+
+All commands accept `--project <path>` to override workspace scoping.
 
 | Command | Description |
 |---------|-------------|
@@ -166,10 +184,20 @@ All tools return JSON strings.
 | `totem update <ID>` | Update an item (`--reason` optional, defaults to "maintenance") |
 | `totem delete <ID>` | Soft-delete (requires `--reason`) |
 | `totem list` | List with `--sort` (`created_at`, `updated_at`, `importance`) and filters |
+| `totem recent` | List most recently created memories (`--limit` default 5) |
+| `totem resolve <ID>` | Mark a conflict as resolved (`--resolution` required) |
 | `totem search` | Full-text search (includes tags) with type/tag filters |
+| `totem export` | Export all memories and conflicts as JSON (`-o` for file output) |
+| `totem import <FILE>` | Import memories from a JSON export file |
 | `totem context` | Assemble scored context for a task |
 
 All commands output JSON to stdout.
+
+## Workspace scoping
+
+totem auto-detects your project root using `git rev-parse --show-toplevel`. The `.totem/totem.db` file is created relative to the git root, not your current working directory. This means the MCP server works correctly regardless of which subdirectory it starts in.
+
+To override auto-detection, pass `--project <path>` on any CLI command or `project` parameter on any MCP tool.
 
 ## Memory types
 
@@ -190,6 +218,21 @@ totem stores memories in two locations:
 - **User memories**: `~/.local/share/totem/totem.db` (personal preferences, global patterns)
 
 `engineering_context` searches both databases, with project memories taking precedence. This means your agent remembers project-specific decisions and your personal coding preferences across all projects.
+
+## Export and import
+
+Move memories between machines or seed a new project:
+
+```bash
+# Export everything from the current project
+totem export -o project-memories.json
+
+# Import into a different project
+cd /path/to/other-project
+totem import ../project-memories.json
+```
+
+Import skips items with duplicate IDs and reports counts of imported vs skipped items.
 
 ## Context assembly
 

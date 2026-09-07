@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
@@ -48,12 +49,35 @@ CREATE TABLE IF NOT EXISTS conflicts (
     condition TEXT NOT NULL,
     resolution_options TEXT NOT NULL,
     recommended TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolution TEXT
 );
 """
 
 
-def get_db_path() -> Path:
+def get_git_root() -> Path | None:
+    """Return git repo root, or None if not in a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def get_db_path(project: str | None = None) -> Path:
+    if project:
+        return Path(project) / ".totem" / "totem.db"
+    git_root = get_git_root()
+    if git_root:
+        return git_root / ".totem" / "totem.db"
     return Path.cwd() / ".totem" / "totem.db"
 
 
@@ -61,8 +85,8 @@ def get_user_db_path() -> Path:
     return Path.home() / ".local" / "share" / "totem" / "totem.db"
 
 
-def connect(db_path: Path | None = None) -> turso.Connection:
-    path = db_path or get_db_path()
+def connect(db_path: Path | None = None, project: str | None = None) -> turso.Connection:
+    path = db_path or get_db_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = turso.connect(str(path), experimental_features="index_method")
     return conn
@@ -72,7 +96,17 @@ def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
+    _migrate_conflicts(conn)
     conn.commit()
+
+
+def _migrate_conflicts(conn: turso.Connection) -> None:
+    """Add resolved_at/resolution columns to existing conflicts tables."""
+    for col in ("resolved_at TEXT", "resolution TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE conflicts ADD COLUMN {col}")
+        except Exception:
+            pass  # column already exists
 
 
 COLUMNS = [
@@ -325,3 +359,64 @@ def get_all_conflicts(conn: turso.Connection) -> list[Conflict]:
         )
         for row in rows
     ]
+
+
+def resolve_conflict(
+    conn: turso.Connection, conflict_id: str, resolution: str
+) -> dict | None:
+    """Mark a conflict as resolved (§45)."""
+    from datetime import datetime, timezone
+
+    row = conn.execute(
+        "SELECT id FROM conflicts WHERE id = ?", (conflict_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute(
+        "UPDATE conflicts SET resolved_at = ?, resolution = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), resolution, conflict_id),
+    )
+    conn.commit()
+    return {"id": conflict_id, "resolution": resolution, "resolved": True}
+
+
+def get_all_items(conn: turso.Connection) -> list[MemoryItem]:
+    """Return all non-deleted memory items."""
+    rows = conn.execute(
+        "SELECT * FROM memory_items WHERE status != 'deleted'"
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
+def get_all_conflict_rows(conn: turso.Connection) -> list[dict]:
+    """Return all conflicts as raw dicts for export."""
+    rows = conn.execute("SELECT * FROM conflicts").fetchall()
+    return [
+        {
+            "id": row[CONFLICT_COL_IDX["id"]],
+            "item_a": row[CONFLICT_COL_IDX["item_a"]],
+            "item_b": row[CONFLICT_COL_IDX["item_b"]],
+            "claim_a": row[CONFLICT_COL_IDX["claim_a"]],
+            "claim_b": row[CONFLICT_COL_IDX["claim_b"]],
+            "condition": row[CONFLICT_COL_IDX["condition"]],
+            "resolution_options": json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
+            "recommended": row[CONFLICT_COL_IDX["recommended"]],
+            "created_at": row[CONFLICT_COL_IDX["created_at"]],
+        }
+        for row in rows
+    ]
+
+
+def import_items(conn: turso.Connection, items: list[dict]) -> dict:
+    """Import memory items, skipping duplicates by ID."""
+    imported = 0
+    skipped = 0
+    for item_dict in items:
+        existing = get_item(conn, item_dict["id"])
+        if existing is not None:
+            skipped += 1
+            continue
+        item = MemoryItem.model_validate(item_dict)
+        insert_item(conn, item)
+        imported += 1
+    return {"imported": imported, "skipped": skipped}
