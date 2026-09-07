@@ -13,9 +13,7 @@
   <a href="https://modelcontextprotocol.io">
     <img src="https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=modelcontextprotocol&logoColor=white&style=for-the-badge" alt="MCP">
   </a>
-  <a href="https://github.com/emiliano-go/totem/stargazers">
-    <img src="https://img.shields.io/github/stars/emiliano-go/totem?logo=github&logoColor=white&style=for-the-badge" alt="Stars">
-  </a>
+
 </p>
 
 Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local Turso database with staleness detection, conflict detection, full-text search, and structured context assembly.
