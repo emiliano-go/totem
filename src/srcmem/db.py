@@ -97,3 +97,23 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(CREATE_FTS_TRIGGERS)
     conn.executescript(CREATE_CONFLICTS)
     conn.commit()
+
+
+def _row_to_item(row: sqlite3.Row) -> MemoryItem:
+    return MemoryItem(
+        id=row["id"],
+        type=MemoryType(row["type"]),
+        title=row["title"],
+        statement=row["statement"],
+        details=row["details"],
+        tags=json.loads(row["tags"]),
+        status=MemoryStatus(row["status"]),
+        confidence=row["confidence"],
+        importance=row["importance"],
+        evidence=[Evidence.model_validate(e) for e in json.loads(row["evidence"])],
+        related_memory_ids=json.loads(row["related_memory_ids"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        verified_at=row["verified_at"],
+        metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+    )
