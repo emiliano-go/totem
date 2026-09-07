@@ -189,3 +189,28 @@ def soft_delete(conn: sqlite3.Connection, item_id: str) -> None:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+def list_items(
+    conn: sqlite3.Connection,
+    type_: str | None = None,
+    tags: list[str] | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[MemoryItem]:
+    query = "SELECT * FROM memory_items WHERE status != 'deleted'"
+    params: list[Any] = []
+    if type_:
+        query += " AND type = ?"
+        params.append(type_)
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    if tags:
+        placeholders = ",".join("?" for _ in tags)
+        query += f" AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value IN ({placeholders}))"
+        params.extend(tags)
+    query += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    return [_row_to_item(row) for row in rows]
