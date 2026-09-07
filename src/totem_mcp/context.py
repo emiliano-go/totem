@@ -234,7 +234,11 @@ def engineering_context(
     if token_budget and token_budget > 0:
         effective_budget = int(token_budget * (1.0 - BUDGET_RESERVED_RATIO))
 
-    char_count = 0
+    # Token estimate: ~4 chars per token for English text
+    def _token_estimate(text: str) -> int:
+        return max(1, len(text) // 4)
+
+    token_count = 0
     truncated = False
 
     for type_ in TYPE_ORDER:
@@ -247,20 +251,22 @@ def engineering_context(
             continue
         label = LABELS[type_]
         section_text = f"\n{label}:\n"
-        if effective_budget and char_count + len(section_text) > effective_budget:
+        section_tokens = _token_estimate(section_text)
+        if effective_budget and token_count + section_tokens > effective_budget:
             truncated = True
             sections.append(f"\n{label}: (truncated, budget exceeded)")
             continue
         sections.append(section_text)
-        char_count += len(section_text)
+        token_count += section_tokens
         for item in items_of_type:
             item_text = _serialize_item(item)
-            if effective_budget and char_count + len(item_text) > effective_budget:
+            item_tokens = _token_estimate(item_text)
+            if effective_budget and token_count + item_tokens > effective_budget:
                 truncated = True
                 sections.append(f"  ... ({len(items_of_type) - items_of_type.index(item)} items truncated)")
                 break
             sections.append(item_text)
-            char_count += len(item_text)
+            token_count += item_tokens
 
     # STALE WARNINGS: always shown, never budget-truncated
     if stale_warnings:

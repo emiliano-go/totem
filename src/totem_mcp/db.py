@@ -110,9 +110,17 @@ def connect(db_path: Path | None = None, project: str | None = None) -> turso.Co
 
 @contextmanager
 def db_connection(project: str | None = None):
-    """Context manager: connect, init schema, auto-close."""
+    """Context manager: connect, init schema, auto-init agent config on first use, auto-close."""
     conn = connect(project=project)
     init_db(conn)
+
+    # Auto-init agent config files on first use (if .totem/ is new)
+    from pathlib import Path
+    project_dir = Path(project) if project else get_git_root()
+    totem_db = project_dir / ".totem" / "totem.db"
+    if not totem_db.exists():
+        init_project(project_dir)
+
     try:
         yield conn
     finally:
