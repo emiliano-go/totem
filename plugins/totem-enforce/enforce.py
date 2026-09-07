@@ -132,13 +132,14 @@ def main() -> None:
     # Check memory
     if tool_name in ("Bash", "bash"):
         command = tool_input.get("command", "")
+        first_word = command.strip().split()[0].split("/")[-1].lower() if command.strip() else ""
+        is_subcmd = bool(SUBCMDS.match(first_word))
+        if not is_subcmd:
+            sys.exit(0)  # Allow non-sub-commands
         words = tokenize_bash(command)
         has_memory = False
         for w in words:
-            # Sub-command args: search general memory. Command names: search cmd: tags
-            first_word = command.strip().split()[0].split("/")[-1].lower() if command.strip() else ""
-            is_subcmd = bool(SUBCMDS.match(first_word))
-            if check_memory(w, project_dir, use_cmd_tag=not is_subcmd):
+            if check_memory(w, project_dir, use_cmd_tag=False):
                 has_memory = True
                 break
     else:
@@ -154,7 +155,7 @@ def main() -> None:
     if tool_name in ("Grep", "grep", "Glob", "glob"):
         redirect = "memory_search_tool"
     elif tool_name in ("Read", "read"):
-        redirect = "engineering_context_tool"
+        redirect = "engineering_context_tool or memory_search_tool (with tags)"
     elif tool_name in ("Bash", "bash"):
         redirect = "memory_commands_tool"
     else:

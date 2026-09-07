@@ -44,11 +44,12 @@ function checkMem(dir, sk) {
   const first = cmd.split(/\s+/)[0]?.split("/").pop()?.toLowerCase()
   const hasSubcmd = first && SUBCMDS.test(first)
 
+  // Only intercept sub-commands that search file content
+  if (isBash && !hasSubcmd) return false
+
   for (const w of words) {
     try {
       let q = `totem search --query "${w}" --limit 1`
-      // Only use cmd: tag for actual command names, not sub-command arguments
-      if (isBash && !hasSubcmd) q += ` --tags "cmd:${w}"`
       const r = execSync(q, { timeout: 5000, encoding: "utf-8", cwd: dir, stdio: ["pipe", "pipe", "pipe"] })
       if (JSON.parse(r || "[]").length > 0) return true
     } catch {}
@@ -79,7 +80,7 @@ export default async ({ directory } = {}) => {
       if (!checkMem(dir, sk)) return
       searchedThisTurn[sk] = new Date().toISOString()
       let redir = "memory_search_tool"
-      if (t === "read") redir = "engineering_context_tool"
+      if (t === "read") redir = "engineering_context_tool or memory_search_tool (with tags)"
       if (t === "bash") redir = "memory_commands_tool"
       throw new Error(`Totem has memory about this. Use ${redir} first. You will be able to ${t} the file after checking memory (only if memory returns nothing relevant). Do not bypass by using bash.`)
     },
