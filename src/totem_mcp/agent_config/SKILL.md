@@ -2,10 +2,12 @@
 name: totem
 description: >
   Persistent memory for engineering agents. Store and retrieve decisions,
-  invariants, gotchas, and rejected ideas across sessions. Use when making
-  architectural decisions, discovering non-obvious behaviors, or when context
-  would otherwise be lost between sessions. Triggers: decision, invariant,
-  gotcha, remember, forgot, context loss, engineering context, memory.
+  invariants, gotchas, rejected ideas, assumptions, open questions, and
+  ambiguities across sessions. Use when making architectural decisions,
+  discovering non-obvious behaviors, tracking assumptions, flagging
+  ambiguities, or when context would otherwise be lost between sessions.
+  Triggers: decision, invariant, gotcha, assumption, ambiguity, open question,
+  remember, forgot, context loss, engineering context, memory.
 ---
 
 # totem Memory Skill
@@ -46,6 +48,56 @@ memory_create_tool(
   statement="Calling as_str_vec() on a non-String column causes a panic, not an error",
   tags=["rust", "types"],
   metadata={"trigger": "Passing Int or Bool column to as_str_vec()"}
+)
+```
+
+**Made an assumption (§4 — distinguish fact/assumption/hypothesis/guarantee):**
+```
+memory_create_tool(
+  type="assumption",
+  title="DB is PostgreSQL 14+",
+  statement="The deployment target runs PostgreSQL 14 or later",
+  tags=["database", "deployment"],
+  metadata={
+    "claimCategory": "assumption",
+    "basis": "Stated in deployment docs but not verified against running instance",
+    "verificationNeeded": true
+  }
+)
+```
+
+**Found an ambiguity (§5 — classify by impact, flag blocking ones):**
+```
+memory_create_tool(
+  type="ambiguity",
+  title="Auth token expiry undefined",
+  statement="Spec does not define token expiry behavior",
+  tags=["auth", "api"],
+  metadata={
+    "question": "What is the expected behavior when an auth token expires?",
+    "interpretations": [
+      {"id": "1", "description": "Return 401 immediately"},
+      {"id": "2", "description": "Refresh automatically and retry"},
+      {"id": "3", "description": "Return 401 with refresh token in header"}
+    ],
+    "impact": "high"
+  }
+)
+```
+
+**Have an open question:**
+```
+memory_create_tool(
+  type="open_question",
+  title="Does the API support batch operations?",
+  statement="Unclear if batch endpoint exists or is planned",
+  tags=["api", "batch"],
+  metadata={
+    "question": "Does the API support batch operations for bulk imports?",
+    "impact": "medium",
+    "blocking": false,
+    "possibleAnswers": ["Yes, POST /api/batch", "No, not yet implemented"]
+  }
 )
 ```
 
@@ -98,7 +150,7 @@ memory_create_tool(
 memory_create_tool(
   type="invariant",
   title="architecture: config_store",
-  statement="ConfigStore wraps Vec<(String,String)> with HashMap index. get_value() returns Option<&str>. Numeric keys use u64 (f64 lacks Hash+Eq).",
+  statement="ConfigStore wraps Vec<(String,String)> with HashMap index. get_value() returns Option<&str>. Numeric keys use u64 (f65 lacks Hash+Eq).",
   tags=["architecture:config_store", "rust"],
   evidence=[{
     "path": "src/lib.rs",
@@ -134,6 +186,27 @@ Always provide `rationale` in metadata. The default is "see statement" but a rea
 ### Invariants
 Require `verificationMethod` and `condition` in metadata.
 
+### Assumptions (§4)
+Require `claimCategory` and `basis` in metadata. Classify every claim:
+- `fact`: established by code, docs, tests, or runtime
+- `assumption`: required to proceed, not established
+- `hypothesis`: plausible explanation, unverified
+- `guarantee`: necessarily follows from spec or implementation
+
+Never present an assumption as a fact. Use calibrated language in `statement`.
+
+### Ambiguities (§5)
+Require `question`, `interpretations`, and `impact` in metadata. Impact levels:
+- `low`: cosmetic, no implementation effect — proceed
+- `medium`: could affect naming or minor details — pick convention
+- `high`: could change API behavior, performance, or correctness — ask or state assumption
+- `critical`: risk of data loss, security, or irreversible damage — never guess
+
+Blocking ambiguities (`high|critical`) are surfaced in `engineering_context` output.
+
+### Open Questions
+Require `question`, `impact`, and `blocking` in metadata. Track what's unresolved and what would resolve it. Use `possibleAnswers` for known possibilities.
+
 ### Gotchas
 No required metadata. Document non-obvious behaviors. Use `cmd:` prefix for command outcomes, `task:` prefix for in-progress work tracking.
 
@@ -157,12 +230,24 @@ Provide `reason` when updating (strongly recommended for audit trail):
 memory_update_tool(id="...", reason="confidence lowered after discovering edge case", confidence=0.7)
 ```
 
+## Conflict detection
+
+totem automatically detects two kinds of contradictions:
+
+1. **Evidence overlap**: Two items of the same type with overlapping file evidence but different statements
+2. **Same-title contradiction**: Two items of the same type sharing a title but with different statements
+
+Both produce structured `Conflict` objects surfaced in `engineering_context` output. Resolve with `resolve_conflict_tool`.
+
 ## Tag conventions
 
 - `task:<name>`: In-progress work. Query with `memory_tasks_tool`.
 - `cmd:<command>`: Command outcomes. Query with `memory_commands_tool`.
 - `architecture:<module>`: Structural facts about a module. Use for codebase documentation.
 - `outcome:<what>`: Measurable results. Use for performance wins, bug fix impact, etc.
+- `edge-case:<scope>`: Relevant edge cases for a function or module.
+- `verify:<scope>`: Verification results for invariants or contracts.
+- `review:<scope>`: Code review findings with severity.
 - Use domain tags (`auth`, `rust`, `api`) for search and context assembly.
 
 ## Hybrid memory
@@ -182,3 +267,5 @@ For new projects, run `totem_init_tool()` first. It creates `.totem/` and the DB
 - Add evidence (file paths + line ranges) for staleness detection
 - `current_task` on `engineering_context_tool` boosts scoring for memories relevant to what you're doing now
 - Store command outcomes with `cmd:` tag so the next agent knows what works
+- Classify assumptions explicitly — the difference between a fact and an assumption matters across sessions
+- Flag ambiguities early — blocking ambiguities (`impact: high|critical`) are surfaced in context output

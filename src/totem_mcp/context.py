@@ -1,4 +1,4 @@
-"""engineering_context tool: §48 output ordering, §46 ambiguity blocking."""
+"""engineering_context tool: context ordering, ambiguity blocking."""
 
 from __future__ import annotations
 
@@ -9,13 +9,19 @@ from .hashing import check_staleness
 from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
 
+# Statuses to skip in context output
+_SKIP_STATUSES = {MemoryStatus.DELETED, MemoryStatus.RESOLVED, MemoryStatus.SUPERSeded}
+
+# Types that get 1.25x score multiplier (spec §11)
+_BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGUITY}
+
 
 def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> float:
-    """Score = 0.4*tagMatch + 0.3*importance + 0.2*confidence + 0.1*recency + taskSimilarity."""
+    """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.15*importance
+    + 0.10*confidence + 0.05*recency. Invariants/constraints: 1.25x. Stale: 0.5x."""
     tag_match = len(set(item.tags) & set(tags)) / max(len(tags), 1)
     recency = 1.0
 
-    # Task similarity: word overlap between task description and item content
     task_sim = 0.0
     if task_words:
         item_words = set(
@@ -26,13 +32,13 @@ def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> fl
             task_sim = min(overlap / max(len(task_words), 1), 1.0)
 
     score = (
-        0.3 * tag_match
-        + 0.25 * item.importance
-        + 0.15 * item.confidence
-        + 0.1 * recency
-        + 0.2 * task_sim
+        0.30 * tag_match
+        + 0.20 * task_sim
+        + 0.15 * item.importance
+        + 0.10 * item.confidence
+        + 0.05 * recency
     )
-    if item.type == MemoryType.INVARIANT:
+    if item.type in _BOOSTED_TYPES:
         score *= 1.25
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
@@ -69,6 +75,40 @@ def _serialize_conflict(c: Conflict) -> str:
     return "\n".join(lines)
 
 
+# Context ordering per spec §13 (types currently implemented)
+TYPE_ORDER = [
+    MemoryType.CONSTRAINT,
+    MemoryType.INVARIANT,
+    MemoryType.CONTRACT,
+    MemoryType.ARCHITECTURE,
+    MemoryType.DECISION,
+    MemoryType.AMBIGUITY,
+    MemoryType.OBSERVATION,
+    MemoryType.GOTCHA,
+    MemoryType.BUG,
+    MemoryType.HYPOTHESIS,
+    MemoryType.IMPLEMENTATION,
+    MemoryType.OPEN_QUESTION,
+    MemoryType.REJECTED_IDEA,
+]
+
+LABELS = {
+    MemoryType.CONSTRAINT: "CRITICAL CONSTRAINTS",
+    MemoryType.INVARIANT: "CRITICAL INVARIANTS",
+    MemoryType.CONTRACT: "RELEVANT CONTRACTS",
+    MemoryType.ARCHITECTURE: "ARCHITECTURE",
+    MemoryType.DECISION: "DECISIONS",
+    MemoryType.AMBIGUITY: "KNOWN AMBIGUITIES",
+    MemoryType.OBSERVATION: "OBSERVATIONS",
+    MemoryType.GOTCHA: "GOTCHAS",
+    MemoryType.BUG: "KNOWN BUGS",
+    MemoryType.HYPOTHESIS: "HYPOTHESES",
+    MemoryType.IMPLEMENTATION: "CODEBASE FACTS",
+    MemoryType.OPEN_QUESTION: "OPEN QUESTIONS",
+    MemoryType.REJECTED_IDEA: "REJECTED IDEAS",
+}
+
+
 def engineering_context(
     conn: turso.Connection,
     tags: list[str],
@@ -77,11 +117,12 @@ def engineering_context(
     types: list[str] | None = None,
     include_stale: bool = False,
     current_task: str | None = None,
+    paths: list[str] | None = None,
 ) -> dict:
-    """Assemble engineering context per §48 output ordering.
+    """Assemble engineering context.
 
     Pipeline: tag match -> score -> sort -> truncate -> serialize.
-    Conflicts and warnings are NEVER dropped for budget (§48).
+    Conflicts, blocking ambiguities, and stale warnings are NEVER dropped for budget.
     Searches both project DB and user DB (~/.local/share/totem/).
     Project items take precedence on ID collision.
     """
@@ -112,27 +153,37 @@ def engineering_context(
     for item in all_items:
         if types and item.type.value not in types:
             continue
-        if item.status == MemoryStatus.DELETED:
+        if item.status in _SKIP_STATUSES:
             continue
         if item.status == MemoryStatus.POTENTIALLY_STALE and not include_stale:
             continue
+        # Filter by paths: only include items with evidence matching given paths
+        if paths:
+            item_paths = {ev.path for ev in item.evidence}
+            if not item_paths.intersection(paths):
+                continue
         score = _score_item(item, tags, task_words)
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # §46: Collect blocking ambiguities, always shown, never budget-truncated
+    # Collect blocking ambiguities (type=ambiguity with impact high/critical)
+    # Always shown, never budget-truncated
     blocking_ambiguities: list[dict] = []
+    non_blocking_ambiguities: list = []
     for _, item in scored:
-        meta = item.metadata or {}
-        if meta.get("flagged_ambiguity") and meta.get("impact") in ("high", "critical"):
-            blocking_ambiguities.append({
-                "id": item.id,
-                "title": item.title,
-                "statement": item.statement,
-                "impact": meta.get("impact"),
-                "blocking": True,
-            })
+        if item.type == MemoryType.AMBIGUITY:
+            meta = item.metadata or {}
+            if meta.get("impact") in ("high", "critical"):
+                blocking_ambiguities.append({
+                    "id": item.id,
+                    "title": item.title,
+                    "statement": item.statement,
+                    "impact": meta.get("impact"),
+                    "blocking": True,
+                })
+            else:
+                non_blocking_ambiguities.append(item)
 
     # Collect staleness warnings, never budget-truncated
     stale_warnings: list[str] = []
@@ -143,28 +194,23 @@ def engineering_context(
                     f"STALE: [{item.type.value}] {item.title}: {ev.path}:{ev.start_line}-{ev.end_line}"
                 )
 
-    # §42: Load stored conflicts, never budget-truncated
+    # Load stored conflicts, never budget-truncated
     stored_conflicts = get_all_conflicts(conn)
 
-    # Group by type for §48 ordering
-    TYPE_ORDER = [
-        MemoryType.INVARIANT,
-        MemoryType.DECISION,
-        MemoryType.GOTCHA,
-        MemoryType.REJECTED_IDEA,
-    ]
+    # Group by type for output ordering
     grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
     for _, item in scored:
-        grouped[item.type.value].append(item)
+        if item.type in grouped:
+            grouped[item.type.value].append(item)
 
-    # Build sections per §48 output ordering
+    # Build sections
     sections: list[str] = []
 
     # TASK
     if task:
         sections.append(f"TASK: {task}")
 
-    # BLOCKING AMBIGUITIES (§46): always shown, never budget-truncated
+    # BLOCKING AMBIGUITIES: always shown, never budget-truncated
     if blocking_ambiguities:
         sections.append("\nBLOCKING AMBIGUITIES:")
         for amb in blocking_ambiguities:
@@ -176,23 +222,14 @@ def engineering_context(
 
     # CONFLICTS: always shown, never budget-truncated
     if stored_conflicts:
-        sections.append("\nCONFLICTS:")
+        sections.append("\nCONTEXT CONFLICTS:")
         for c in stored_conflicts:
             sections.append(_serialize_conflict(c))
     else:
-        sections.append("\nCONFLICTS: (none)")
+        sections.append("\nCONTEXT CONFLICTS: (none)")
 
-    # §48: CRITICAL INVARIANTS, DECISIONS, GOTCHAS, REJECTED IDEAS
-    LABELS = {
-        MemoryType.INVARIANT: "CRITICAL INVARIANTS",
-        MemoryType.DECISION: "DECISIONS",
-        MemoryType.GOTCHA: "GOTCHAS",
-        MemoryType.REJECTED_IDEA: "REJECTED IDEAS",
-    }
-
-    # Budget: reserve fixed minimum for non-item sections
-    # (ambiguities + conflicts + warnings are never truncated)
-    BUDGET_RESERVED_RATIO = 0.3  # 30% reserved for meta-sections
+    # Budget: reserve fixed minimum for meta-sections
+    BUDGET_RESERVED_RATIO = 0.3
     effective_budget = token_budget
     if token_budget and token_budget > 0:
         effective_budget = int(token_budget * (1.0 - BUDGET_RESERVED_RATIO))
@@ -201,7 +238,11 @@ def engineering_context(
     truncated = False
 
     for type_ in TYPE_ORDER:
-        items_of_type = grouped[type_.value]
+        # Ambiguities are split: blocking already shown above, non-blocking go here
+        if type_ == MemoryType.AMBIGUITY:
+            items_of_type = non_blocking_ambiguities
+        else:
+            items_of_type = grouped[type_.value]
         if not items_of_type:
             continue
         label = LABELS[type_]
@@ -223,7 +264,7 @@ def engineering_context(
 
     # STALE WARNINGS: always shown, never budget-truncated
     if stale_warnings:
-        sections.append("\nSTALE WARNINGS:")
+        sections.append("\nSTALE KNOWLEDGE WARNINGS:")
         for w in stale_warnings:
             sections.append(f"  {w}")
 

@@ -1,8 +1,9 @@
 [project]
 name = "totem-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Persistent memory layer for engineering agents"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Emiliano Gandini Outeda", email = "emiliano.gandini@protonmail.com" }
 ]

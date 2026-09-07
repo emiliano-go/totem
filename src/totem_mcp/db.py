@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import turso
 
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -25,11 +26,13 @@ CREATE TABLE IF NOT EXISTS memory_items (
     status TEXT NOT NULL DEFAULT 'active',
     confidence REAL NOT NULL DEFAULT 1.0,
     importance REAL NOT NULL DEFAULT 0.5,
+    scope TEXT,
     evidence TEXT NOT NULL DEFAULT '[]',
     related_memory_ids TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     verified_at TEXT,
+    verified_commit TEXT,
     metadata TEXT,
     schema_version INTEGER NOT NULL DEFAULT 1
 );
@@ -52,6 +55,19 @@ CREATE TABLE IF NOT EXISTS conflicts (
     created_at TEXT NOT NULL,
     resolved_at TEXT,
     resolution TEXT
+);
+"""
+
+CREATE_HISTORY = """
+CREATE TABLE IF NOT EXISTS memory_history (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    field TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    reason TEXT,
+    timestamp TEXT NOT NULL
 );
 """
 
@@ -92,11 +108,25 @@ def connect(db_path: Path | None = None, project: str | None = None) -> turso.Co
     return conn
 
 
+@contextmanager
+def db_connection(project: str | None = None):
+    """Context manager: connect, init schema, auto-close."""
+    conn = connect(project=project)
+    init_db(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
+    conn.executescript(CREATE_HISTORY)
     _migrate_conflicts(conn)
+    _migrate_verified_commit(conn)
+    _migrate_scope(conn)
     conn.commit()
 
 
@@ -109,10 +139,27 @@ def _migrate_conflicts(conn: turso.Connection) -> None:
             pass  # column already exists
 
 
+def _migrate_verified_commit(conn: turso.Connection) -> None:
+    """Add verified_commit column to existing memory_items tables."""
+    try:
+        conn.execute("ALTER TABLE memory_items ADD COLUMN verified_commit TEXT")
+    except Exception:
+        pass  # column already exists
+
+
+def _migrate_scope(conn: turso.Connection) -> None:
+    """Add scope column to existing memory_items tables."""
+    try:
+        conn.execute("ALTER TABLE memory_items ADD COLUMN scope TEXT")
+    except Exception:
+        pass  # column already exists
+
+
 COLUMNS = [
     "id", "type", "title", "statement", "details", "tags", "status",
     "confidence", "importance", "evidence", "related_memory_ids",
-    "created_at", "updated_at", "verified_at", "metadata", "schema_version",
+    "created_at", "updated_at", "verified_at", "metadata",
+    "schema_version", "verified_commit", "scope",
 ]
 COL_IDX = {name: i for i, name in enumerate(COLUMNS)}
 
@@ -129,11 +176,13 @@ def _row_to_item(row: tuple) -> MemoryItem:
         status=MemoryStatus(row[r["status"]]),
         confidence=row[r["confidence"]],
         importance=row[r["importance"]],
+        scope=row[r["scope"]],
         evidence=[Evidence.model_validate(e) for e in json.loads(row[r["evidence"]])],
         related_memory_ids=json.loads(row[r["related_memory_ids"]]),
         created_at=row[r["created_at"]],
         updated_at=row[r["updated_at"]],
         verified_at=row[r["verified_at"]],
+        verified_commit=row[r["verified_commit"]],
         metadata=json.loads(row[r["metadata"]]) if row[r["metadata"]] else None,
     )
 
@@ -142,9 +191,9 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
     conn.execute(
         """INSERT INTO memory_items
            (id, type, title, statement, details, tags, status, confidence,
-            importance, evidence, related_memory_ids, created_at, updated_at,
-            verified_at, metadata, schema_version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            importance, scope, evidence, related_memory_ids, created_at, updated_at,
+            verified_at, verified_commit, metadata, schema_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item.id,
             item.type.value,
@@ -155,16 +204,58 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
             item.status.value,
             item.confidence,
             item.importance,
+            item.scope,
             json.dumps([e.model_dump(by_alias=True) for e in item.evidence]),
             json.dumps(item.related_memory_ids),
             item.created_at,
             item.updated_at,
             item.verified_at,
+            item.verified_commit,
             json.dumps(item.metadata) if item.metadata else None,
             SCHEMA_VERSION,
         ),
     )
     conn.commit()
+
+
+def insert_history(
+    conn: turso.Connection,
+    item_id: str,
+    event: str,
+    field: str | None = None,
+    old_value: str | None = None,
+    new_value: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Append an immutable history event for audit trail."""
+    from datetime import datetime, timezone
+
+    conn.execute(
+        """INSERT INTO memory_history
+           (id, item_id, event, field, old_value, new_value, reason, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()),
+            item_id,
+            event,
+            field,
+            old_value,
+            new_value,
+            reason,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def expand_tags(tags: list[str]) -> list[str]:
+    """Expand tags to include hierarchical children. auth → [auth, auth.*, auth.*.*]."""
+    expanded = set()
+    for tag in tags:
+        expanded.add(tag)
+        # Add wildcard pattern for children
+        expanded.add(f"{tag}.%")
+    return list(expanded)
 
 
 def get_item(conn: turso.Connection, item_id: str) -> MemoryItem | None:
@@ -217,6 +308,7 @@ def list_items(
     status: str | None = None,
     sort: str = "updated_at",
     limit: int = 50,
+    include_children_tags: bool = False,
 ) -> list[MemoryItem]:
     if sort not in ("created_at", "updated_at", "importance"):
         sort = "updated_at"
@@ -229,9 +321,19 @@ def list_items(
         query += " AND status = ?"
         params.append(status)
     if tags:
-        placeholders = ",".join("?" for _ in tags)
-        query += f" AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value IN ({placeholders}))"
-        params.extend(tags)
+        if include_children_tags:
+            # Expand tags to include children: auth → auth OR auth.% 
+            conditions = []
+            for tag in tags:
+                conditions.append("json_each.value = ?")
+                params.append(tag)
+                conditions.append("json_each.value LIKE ?")
+                params.append(f"{tag}.%")
+            query += f" AND EXISTS (SELECT 1 FROM json_each(tags) WHERE {' OR '.join(conditions)})"
+        else:
+            placeholders = ",".join("?" for _ in tags)
+            query += f" AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value IN ({placeholders}))"
+            params.extend(tags)
     query += f" ORDER BY {sort} DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
@@ -388,25 +490,6 @@ def get_all_items(conn: turso.Connection) -> list[MemoryItem]:
     return [_row_to_item(row) for row in rows]
 
 
-def get_all_conflict_rows(conn: turso.Connection) -> list[dict]:
-    """Return all conflicts as raw dicts for export."""
-    rows = conn.execute("SELECT * FROM conflicts").fetchall()
-    return [
-        {
-            "id": row[CONFLICT_COL_IDX["id"]],
-            "item_a": row[CONFLICT_COL_IDX["item_a"]],
-            "item_b": row[CONFLICT_COL_IDX["item_b"]],
-            "claim_a": row[CONFLICT_COL_IDX["claim_a"]],
-            "claim_b": row[CONFLICT_COL_IDX["claim_b"]],
-            "condition": row[CONFLICT_COL_IDX["condition"]],
-            "resolution_options": json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
-            "recommended": row[CONFLICT_COL_IDX["recommended"]],
-            "created_at": row[CONFLICT_COL_IDX["created_at"]],
-        }
-        for row in rows
-    ]
-
-
 def import_items(conn: turso.Connection, items: list[dict]) -> dict:
     """Import memory items, skipping duplicates by ID."""
     imported = 0
@@ -431,6 +514,19 @@ def find_by_title(conn: turso.Connection, title: str) -> MemoryItem | None:
     if row is None:
         return None
     return _row_to_item(row)
+
+
+def find_same_title_different_statement(
+    conn: turso.Connection, title: str, statement: str, item_type: str, exclude_id: str
+) -> list[MemoryItem]:
+    """Find active items with same title but different statement (conceptual contradiction)."""
+    rows = conn.execute(
+        """SELECT * FROM memory_items
+           WHERE title = ? AND type = ? AND status = 'active'
+           AND id != ? AND statement != ?""",
+        (title, item_type, exclude_id, statement),
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
 
 
 def list_task_items(conn: turso.Connection, limit: int = 10) -> list[MemoryItem]:

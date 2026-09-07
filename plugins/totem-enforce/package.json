@@ -1,0 +1,24 @@
+{
+  "name": "totem",
+  "version": "0.2.1",
+  "description": "Persistent memory layer for engineering agents (opencode plugin + MCP server)",
+  "keywords": ["opencode-plugin", "opencode", "totem", "memory", "mcp", "agent"],
+  "author": "Emiliano Gandini Outeda <emiliano.gandini@protonmail.com>",
+  "license": "MIT",
+  "main": ".opencode/plugins/totem-enforce.js",
+  "bin": {
+    "totem": "bin/totem.js"
+  },
+  "files": [
+    ".opencode/",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

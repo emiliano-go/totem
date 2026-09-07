@@ -1,0 +1,44 @@
+{
+  "name": "totem-enforce",
+  "version": "1.0.0",
+  "description": "Enforces totem-first workflow: search memory before grep/read/bash",
+  "skills": "./skills/",
+  "sessionStart": {
+    "skill": "totem-enforce"
+  },
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Grep|Glob",
+      "command": "python3 ./hooks/enforce.py",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Read",
+      "command": "python3 ./hooks/enforce.py",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "command": "python3 ./hooks/enforce.py",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Read",
+      "command": "python3 ./hooks/store-read.py",
+      "timeout": 15
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "python3 ./hooks/clear-state.py",
+      "timeout": 5
+    }
+  ],
+  "interface": {
+    "displayName": "Totem Enforcement",
+    "shortDescription": "Forces totem-first workflow via tool call interception"
+  }
+}

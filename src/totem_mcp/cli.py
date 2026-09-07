@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 
 import click
-import turso
 
 from .context import engineering_context
-from .db import connect, init_db, list_items, list_task_items, list_command_items
+from .db import db_connection
 from .tools import (
     memory_create,
     memory_delete,
@@ -22,12 +21,6 @@ from .tools import (
     resolve_conflict,
     totem_init,
 )
-
-
-def _get_conn(project: str | None = None) -> turso.Connection:
-    conn = connect(project=project)
-    init_db(conn)
-    return conn
 
 
 @click.group()
@@ -66,26 +59,24 @@ def create(
     related: str | None,
 ) -> None:
     """Create a new memory item."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
-        result = memory_create(
-            conn,
-            type=mem_type,
-            title=title,
-            statement=statement,
-            tags=[t.strip() for t in tags.split(",")],
-            details=details,
-            confidence=confidence,
-            importance=importance,
-            evidence=json.loads(evidence) if evidence else None,
-            metadata=json.loads(metadata) if metadata else None,
-            related_memory_ids=[r.strip() for r in related.split(",")] if related else None,
-        )
-        click.echo(json.dumps(result, indent=2))
-    except ValueError as e:
-        raise click.ClickException(str(e))
-    finally:
-        conn.close()
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        try:
+            result = memory_create(
+                conn,
+                type=mem_type,
+                title=title,
+                statement=statement,
+                tags=[t.strip() for t in tags.split(",")],
+                details=details,
+                confidence=confidence,
+                importance=importance,
+                evidence=json.loads(evidence) if evidence else None,
+                metadata=json.loads(metadata) if metadata else None,
+                related_memory_ids=[r.strip() for r in related.split(",")] if related else None,
+            )
+            click.echo(json.dumps(result, indent=2))
+        except ValueError as e:
+            raise click.ClickException(str(e))
 
 
 @cli.command()
@@ -94,14 +85,11 @@ def create(
 @click.pass_context
 def get(ctx: click.Context, item_id: str, no_evidence: bool) -> None:
     """Retrieve a memory item by ID."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_get(conn, item_id, include_evidence=not no_evidence)
         if result is None:
             raise click.ClickException(f"Item {item_id} not found")
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -130,28 +118,26 @@ def update(
     metadata: str | None,
 ) -> None:
     """Update a memory item. Reason is required."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
-        result = memory_update(
-            conn,
-            id=item_id,
-            reason=reason,
-            title=title,
-            statement=statement,
-            tags=[t.strip() for t in tags.split(",")] if tags else None,
-            status=status,
-            confidence=confidence,
-            importance=importance,
-            evidence=json.loads(evidence) if evidence else None,
-            metadata=json.loads(metadata) if metadata else None,
-        )
-        if result is None:
-            raise click.ClickException(f"Item {item_id} not found")
-        click.echo(json.dumps(result, indent=2))
-    except ValueError as e:
-        raise click.ClickException(str(e))
-    finally:
-        conn.close()
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        try:
+            result = memory_update(
+                conn,
+                id=item_id,
+                reason=reason,
+                title=title,
+                statement=statement,
+                tags=[t.strip() for t in tags.split(",")] if tags else None,
+                status=status,
+                confidence=confidence,
+                importance=importance,
+                evidence=json.loads(evidence) if evidence else None,
+                metadata=json.loads(metadata) if metadata else None,
+            )
+            if result is None:
+                raise click.ClickException(f"Item {item_id} not found")
+            click.echo(json.dumps(result, indent=2))
+        except ValueError as e:
+            raise click.ClickException(str(e))
 
 
 @cli.command()
@@ -160,12 +146,9 @@ def update(
 @click.pass_context
 def delete(ctx: click.Context, item_id: str, reason: str) -> None:
     """Soft-delete a memory item."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_delete(conn, item_id, reason)
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command("list")
@@ -177,13 +160,10 @@ def delete(ctx: click.Context, item_id: str, reason: str) -> None:
 @click.pass_context
 def list_cmd(ctx: click.Context, mem_type: str | None, tags: str | None, status: str | None, sort: str, limit: int) -> None:
     """List memory items with optional filters."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
         result = memory_list(conn, type=mem_type, tags=tag_list, status=status, sort=sort, limit=limit)
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -191,12 +171,9 @@ def list_cmd(ctx: click.Context, mem_type: str | None, tags: str | None, status:
 @click.pass_context
 def recent(ctx: click.Context, limit: int) -> None:
     """List most recently created memories."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_recent(conn, limit=limit)
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -205,14 +182,11 @@ def recent(ctx: click.Context, limit: int) -> None:
 @click.pass_context
 def resolve(ctx: click.Context, conflict_id: str, resolution: str) -> None:
     """Mark a conflict as resolved."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = resolve_conflict(conn, conflict_id, resolution)
         if result is None:
             raise click.ClickException(f"Conflict {conflict_id} not found")
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -236,15 +210,13 @@ def init(project: str | None) -> None:
 @click.pass_context
 def tasks(ctx: click.Context, limit: int) -> None:
     """List in-progress task memories (tagged with task:*)."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        from .db import list_task_items
         items = list_task_items(conn, limit=limit)
         if not items:
             click.echo("No task memories found. Store one with tag 'task:<name>'.")
             return
         click.echo(json.dumps([item.model_dump(by_alias=True) for item in items], indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -252,15 +224,13 @@ def tasks(ctx: click.Context, limit: int) -> None:
 @click.pass_context
 def commands(ctx: click.Context, limit: int) -> None:
     """List command outcome memories (gotchas tagged with cmd:*)."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        from .db import list_command_items
         items = list_command_items(conn, limit=limit)
         if not items:
             click.echo("No command memories found. Store one with tag 'cmd:<command>' and type gotcha.")
             return
         click.echo(json.dumps([item.model_dump(by_alias=True) for item in items], indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -279,8 +249,7 @@ def search(
     limit: int,
 ) -> None:
     """Hybrid tag + full-text search."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         type_list = [t.strip() for t in types.split(",")] if types else None
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
         result = memory_search(
@@ -292,8 +261,6 @@ def search(
             limit=limit,
         )
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -314,8 +281,7 @@ def context(
     current_task: str | None,
 ) -> None:
     """Assemble engineering context (§48 output ordering)."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         tag_list = [t.strip() for t in tags.split(",")]
         type_list = [t.strip() for t in types.split(",")] if types else None
         result = engineering_context(
@@ -328,8 +294,6 @@ def context(
             current_task=current_task,
         )
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -337,8 +301,7 @@ def context(
 @click.pass_context
 def export(ctx: click.Context, output: str | None) -> None:
     """Export all memories and conflicts as JSON."""
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_export(conn)
         data = json.dumps(result, indent=2)
         if output:
@@ -347,8 +310,6 @@ def export(ctx: click.Context, output: str | None) -> None:
             click.echo(f"Exported to {output}")
         else:
             click.echo(data)
-    finally:
-        conn.close()
 
 
 @cli.command()
@@ -358,12 +319,9 @@ def import_cmd(ctx: click.Context, file: str) -> None:
     """Import memories from a JSON export file."""
     from pathlib import Path
     data = json.loads(Path(file).read_text())
-    conn = _get_conn(project=ctx.obj.get("project"))
-    try:
+    with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_import(conn, data)
         click.echo(json.dumps(result, indent=2))
-    finally:
-        conn.close()
 
 
 def main() -> None:

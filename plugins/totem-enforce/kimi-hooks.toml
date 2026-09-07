@@ -1,0 +1,32 @@
+# Totem enforcement hooks for Kimi Code
+# Install: copy these to ~/.kimi-code/config.toml
+# Or use as a plugin (see README.md)
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Grep|Glob"
+command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
+timeout = 10
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Read"
+command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
+timeout = 10
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
+timeout = 10
+
+[[hooks]]
+event = "PostToolUse"
+matcher = "Read"
+command = "python3 ~/.kimi-code/hooks/totem-store-read.py"
+timeout = 15
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "python3 ~/.kimi-code/hooks/totem-clear-state.py"
+timeout = 5

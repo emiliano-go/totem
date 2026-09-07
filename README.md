@@ -23,26 +23,39 @@ AI coding agents lose engineering context between sessions. They re-discover the
 
 ## Features
 
-- **Four memory types**: decision, invariant, gotcha, rejected_idea (each with type-specific metadata)
+- **14 memory types**: decision, invariant, gotcha, rejected_idea, assumption, open_question, ambiguity, contract, constraint, hypothesis, observation, bug, architecture, implementation (each with type-specific metadata)
 - **Staleness detection**: SHA256 content hashing on linked evidence; auto-transitions items to `potentially_stale` when source code changes
-- **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges
+- **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges; same-title-different-statement detection
 - **Conflict resolution**: mark conflicts as resolved and pick a winner
 - **Dedup on create**: warns if a memory with the same title already exists
 - **Full-text search**: Turso FTS5 on title, statement, details, and tags
-- **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`. Context assembly searches both.
-- **Context assembly**: scored pipeline with `current_task` relevance boost, token budget support, section ordering per spec
+- **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`; context assembly searches both
+- **Context assembly**: scored pipeline with `current_task` relevance boost, token budget support, 12-section ordering per spec
 - **Task resumption**: tag in-progress work with `task:<name>`, resume across sessions
 - **Command outcomes**: store command results with `cmd:` tag prefix, check before re-running
 - **Workspace scoping**: auto-detects git root for correct DB placement; explicit `--project` override available
 - **Export/import**: move memories between machines or seed a new project from an existing one
 - **Agent integration**: bundles AGENTS.md and SKILL.md for automatic agent instruction setup
-- **MCP server**: 14 tools exposed via Model Context Protocol
+- **MCP server**: 29 tools exposed via Model Context Protocol
 - **CLI**: 14 commands for manual operations
 - **Auto-init**: agent config installed automatically on first tool call
+- **History audit**: append-only log of every create, update, and delete with reason tracking
+- **Tag normalization**: lowercase, trim, spaces to hyphens on write; tags normalized once, not at query time
+- **Evidence kinds**: source, test, doc, config, git, user, runtime, agent (enum, defaults to source)
 
 ## Install
 
 Requires Python 3.13+.
+
+### npm (recommended for opencode users)
+
+```bash
+npm install totem
+```
+
+This installs the opencode enforcement plugin and auto-installs the Python MCP server.
+
+### From source
 
 ```bash
 git clone https://github.com/emiliano-go/totem.git
@@ -219,7 +232,7 @@ totem export -o backup.json
 totem import backup.json
 ```
 
-## MCP tools (14)
+## MCP tools (29)
 
 All tools return JSON strings. Every tool accepts an optional `project` parameter to override workspace scoping.
 
@@ -239,6 +252,21 @@ All tools return JSON strings. Every tool accepts an optional `project` paramete
 | `engineering_context_tool` | Scored context assembly with `current_task` relevance boost |
 | `memory_export_tool` | Export all memories and conflicts as portable JSON |
 | `memory_import_tool` | Import memories from an export dict (skips duplicate IDs) |
+| `decision_create` | Create a decision memory |
+| `invariant_create` | Create an invariant memory |
+| `gotcha_create` | Create a gotcha memory |
+| `rejected_idea_create` | Create a rejected idea memory |
+| `assumption_create` | Create an assumption memory |
+| `open_question_create` | Create an open question memory |
+| `ambiguity_create` | Create an ambiguity memory |
+| `contract_create` | Create a contract memory |
+| `constraint_create` | Create a constraint memory |
+| `hypothesis_create` | Create a hypothesis memory |
+| `observation_create` | Create an observation memory |
+| `bug_create` | Create a bug memory |
+| `architecture_create` | Create an architecture memory |
+| `implementation_create` | Create an implementation memory |
+| `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
 ## CLI commands (14)
 
@@ -279,6 +307,16 @@ Each type captures a different kind of engineering knowledge:
 | `invariant` | A rule that must hold | `verificationMethod`, `condition` (required) |
 | `gotcha` | A non-obvious pitfall discovered | (none) |
 | `rejected_idea` | A proposal that was considered and declined | `proposal`, `reasonRejected` (required) |
+| `assumption` | A claim with a specific epistemic status | `claimCategory` (fact/assumption/hypothesis/guarantee), `basis` (required) |
+| `open_question` | An unresolved question | `question`, `impact` (low/medium/high/critical), `blocking` (required) |
+| `ambiguity` | An ambiguous requirement | `question`, `interpretations` (list), `impact` (required) |
+| `contract` | Observable behavior of functions/APIs | `subject` (required), `inputs`, `outputs`, `errors`, `sideEffects`, `compatibility` |
+| `constraint` | Implementation restrictions | `constraint` (required), `scope`, `severity` (must/should/prefer) |
+| `hypothesis` | Plausible explanation needing verification | `hypothesis` (required), `evidenceFor`, `evidenceAgainst`, `confidence`, `verificationPlan` |
+| `observation` | Something seen in code or runtime | `observation` (required), `context`, `confidence` |
+| `bug` | A defect with state machine | `symptom` (required), `severity`, `state` (open/confirmed/fixed/verified), `expected`, `actual`, `reproduction`, `suspectedCause` |
+| `architecture` | Component responsibility mapping | `component` (required), `responsibility` (required), `dependencies`, `owns`, `communicatesWith`, `sourcePaths` |
+| `implementation` | Codebase facts | `subject` (required), `kind` (api/function/module/type/config/schema), `path` (required) |
 
 ## Hybrid memory
 
@@ -320,11 +358,20 @@ Invariants get a 1.25x multiplier. Potentially stale items get a 0.5x penalty. T
 1. TASK (if provided)
 2. BLOCKING AMBIGUITIES (high/critical impact, always shown)
 3. CONFLICTS (always shown)
-4. CRITICAL INVARIANTS
-5. DECISIONS
-6. GOTCHAS
-7. REJECTED IDEAS
-8. STALE WARNINGS (always shown)
+4. CRITICAL CONSTRAINTS
+5. CRITICAL INVARIANTS
+6. RELEVANT CONTRACTS
+7. ARCHITECTURE
+8. DECISIONS
+9. KNOWN AMBIGUITIES
+10. OBSERVATIONS
+11. GOTCHAS
+12. KNOWN BUGS
+13. HYPOTHESES
+14. CODEBASE FACTS
+15. OPEN QUESTIONS
+16. REJECTED IDEAS
+17. STALE WARNINGS (always shown)
 
 Conflicts and warnings are never dropped due to token budget. Item sections truncate when budget is exceeded, with a count of omitted items noted.
 
@@ -335,16 +382,26 @@ Core fields on every `MemoryItem`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | UUID | Auto-generated primary key |
-| `type` | enum | `decision`, `invariant`, `gotcha`, `rejected_idea` |
+| `type` | enum | 14 types (see memory types above) |
 | `title` | str | Short title |
 | `statement` | str | The factual claim |
 | `details` | str? | Additional context |
 | `tags` | list[str] | At least one required. Use `task:` or `cmd:` prefix for special types. |
-| `status` | enum | `active`, `potentially_stale`, `invalidated`, `deleted` |
+| `status` | enum | `active`, `potentially_stale`, `invalidated`, `deleted`, `resolved`, `superseded` |
 | `confidence` | float | 0 to 1, default 1.0 |
 | `importance` | float | 0 to 1, default 0.5 |
-| `evidence` | list[Evidence] | Linked source code with content hashes. Shows as `path:start-end` in context output, letting agents jump directly to the relevant code. |
+| `scope` | str? | Optional scope tag (e.g. "auth", "db", "api") |
+| `evidence` | list[Evidence] | Linked source code with content hashes and kinds |
+| `related_memory_ids` | list[UUID] | Links to related items |
 | `metadata` | dict? | Type-specific keys (see memory types above) |
+| `schema_version` | int | Schema version (currently 3) |
+| `verified_commit` | str? | Git commit where this was last verified |
+
+Evidence entries have:
+- `path`: Source file path
+- `startLine`, `endLine`: Line range
+- `contentHash`: SHA256 for staleness detection
+- `kind`: One of source, test, doc, config, git, user, runtime, agent (default: source)
 
 Evidence entries link to source code ranges with SHA256 hashes. Two purposes:
 1. **Staleness detection**: if the source file changes, the memory is flagged `potentially_stale`

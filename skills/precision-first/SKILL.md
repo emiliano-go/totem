@@ -328,15 +328,50 @@ Never document intent as if it were a guarantee.
 
 When totem is available, use its tools to persist engineering state across sessions:
 
-- **`memory_create`**: Store decisions, invariants, gotchas, and rejected ideas
+- **`memory_create`**: Store decisions, invariants, gotchas, rejected ideas, assumptions, open questions, and ambiguities
 - **`memory_get`**: Retrieve with automatic staleness detection
 - **`memory_search`**: Find relevant memories by tag or full-text (searches both project and user memories)
-- **`engineering_context`**: Assemble durable externalized working state (§26)
-- **`rejected_idea`**: Prevent re-proposing dead ends (§15/§25)
+- **`engineering_context`**: Assemble durable externalized working state (§26). Blocking ambiguities and conflicts are never dropped.
+- **`resolve_conflict`**: Mark contradictions as resolved with a chosen resolution
+
+### Memory types mapped to methodology
+
+| Methodology section | Totem type | Required metadata |
+|---|---|---|
+| §4 Explicit Assumptions | `assumption` | `claimCategory` (fact/assumption/hypothesis/guarantee), `basis` |
+| §5 Ambiguity Handling | `ambiguity` | `question`, `interpretations`, `impact` (low/medium/high/critical) |
+| §7 Invariants | `invariant` | `verificationMethod`, `condition` |
+| §15/§25 Rejected Ideas | `rejected_idea` | `proposal`, `reasonRejected` |
+| §26 Externalized State | `open_question` | `question`, `impact`, `blocking` |
+| §36 Decision Making | `decision` | `rationale` (strongly recommended) |
 
 ### When creating decisions
 
 Always provide `rationale` in metadata. The default is "see statement" but a real rationale is what makes memory useful across sessions. Record WHY, not just WHAT. Include alternatives considered and why they were rejected. This is the difference between a decision that teaches and one that just states.
+
+### When storing assumptions (§4)
+
+Always provide `claimCategory` and `basis`. Classify every claim:
+- `fact`: established by code, docs, tests, or runtime
+- `assumption`: required to proceed, not established
+- `hypothesis`: plausible explanation, unverified
+- `guarantee`: necessarily follows from spec or implementation
+
+Never present an assumption as a fact. Use calibrated language in `statement`.
+
+### When flagging ambiguities (§5)
+
+Always provide `question`, `interpretations`, and `impact`. Impact levels:
+- `low`: cosmetic, no implementation effect — proceed
+- `medium`: could affect naming or minor details — pick convention
+- `high`: could change API behavior, performance, or correctness — ask or state assumption
+- `critical`: risk of data loss, security, or irreversible damage — never guess
+
+Blocking ambiguities (`impact: high|critical`) are surfaced in `engineering_context` output. The agent must resolve or explicitly assume before proceeding.
+
+### When tracking open questions (§31)
+
+Always provide `question`, `impact`, and `blocking`. Use `possibleAnswers` for known possibilities. Open questions are surfaced in `engineering_context` output under OPEN QUESTIONS.
 
 ### When updating memories
 
@@ -344,4 +379,18 @@ Always provide `reason`. The default is "maintenance" but a specific reason crea
 
 ### Claim discipline
 
-totem enforces: `verificationMethod` is required on invariants (§4), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).
+totem enforces at write time:
+- `verificationMethod` is required on invariants (§7)
+- `claimCategory` and `basis` are required on assumptions (§4)
+- `question`, `interpretations`, and `impact` are required on ambiguities (§5)
+- Conflicts are detected on two dimensions: evidence overlap and same-title contradiction (§6)
+- Blocking ambiguities are surfaced in `engineering_context` output (§5)
+- Rejected ideas are surfaced to prevent re-proposing dead ends (§15/§25)
+
+### Conflict detection
+
+totem automatically detects two kinds of contradictions:
+1. **Evidence overlap**: Two items of the same type with overlapping file evidence but different statements
+2. **Same-title contradiction**: Two items of the same type sharing a title but with different statements
+
+Both produce structured conflict objects surfaced in `engineering_context` output.

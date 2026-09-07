@@ -11,7 +11,6 @@ import turso
 from .conflicts import detect_conflicts
 from .db import (
     find_by_title,
-    get_all_conflict_rows,
     get_all_conflicts,
     get_all_items,
     get_item,
@@ -19,6 +18,7 @@ from .db import (
     import_items as db_import_items,
     init_db,
     insert_conflict,
+    insert_history,
     insert_item,
     list_items,
     resolve_conflict as db_resolve_conflict,
@@ -38,6 +38,11 @@ from .models import (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_tags(tags: list[str]) -> list[str]:
+    """Normalize tags: lowercase, trim, spaces → hyphens."""
+    return [t.strip().lower().replace(" ", "-") for t in tags if t.strip()]
 
 
 def memory_create(
@@ -63,6 +68,7 @@ def memory_create(
     if not (0 <= importance <= 1):
         raise ValueError("importance must in [0, 1]")
 
+    tags = _normalize_tags(tags)
     mem_type = MemoryType(type)
     if mem_type == MemoryType.INVARIANT:
         if not metadata or "verificationMethod" not in metadata:
@@ -103,6 +109,7 @@ def memory_create(
         )
 
     insert_item(conn, item)
+    insert_history(conn, item.id, "created")
 
     warnings = []
     for c in conflicts:
@@ -187,7 +194,8 @@ def memory_update(
     if tags is not None:
         if not tags:
             raise ValueError("At least one tag is required")
-        fields["tags"] = str(tags) if isinstance(tags, str) else json.dumps(tags)
+        tags = _normalize_tags(tags)
+        fields["tags"] = json.dumps(tags)
     if status is not None:
         fields["status"] = status
     if confidence is not None:
@@ -207,7 +215,7 @@ def memory_update(
         fields["metadata"] = json.dumps(metadata)
 
     update_item_row(conn, id, fields)
-    print(f"[totem] Update {id}: {reason}")
+    insert_history(conn, id, "updated", reason=reason)
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
 
@@ -220,7 +228,7 @@ def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     if item is None:
         return {"error": f"Item {id} not found"}
     soft_delete(conn, id)
-    print(f"[totem] Deleted {id}: {reason}")
+    insert_history(conn, id, "deleted", reason=reason)
     return {"id": id, "status": "deleted"}
 
 
@@ -259,12 +267,12 @@ def memory_export(conn: turso.Connection) -> dict:
     from .db import SCHEMA_VERSION
 
     items = get_all_items(conn)
-    conflicts = get_all_conflict_rows(conn)
+    conflicts = get_all_conflicts(conn)
     return {
         "schema_version": SCHEMA_VERSION,
         "exported_at": _now(),
         "items": [item.model_dump(by_alias=True) for item in items],
-        "conflicts": conflicts,
+        "conflicts": [c.model_dump(by_alias=True) for c in conflicts],
     }
 
 
