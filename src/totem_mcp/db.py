@@ -469,37 +469,49 @@ def init_project(project_dir: Path) -> dict:
     init_db(conn)
     conn.close()
 
-    # Append totem section to user's AGENTS.md (don't overwrite)
     agent_config_dir = Path(__file__).parent / "agent_config"
-    opencode_dir = Path.home() / ".config" / "opencode"
-    skills_dir = opencode_dir / "skills" / "totem"
     copied = []
 
     if agent_config_dir.exists():
-        # AGENTS.md: append if not already present
         agents_src = agent_config_dir / "AGENTS.md"
-        agents_dst = opencode_dir / "AGENTS.md"
+        skill_src = agent_config_dir / "SKILL.md"
+
+        # opencode: append to ~/.config/opencode/AGENTS.md, create SKILL.md
+        opencode_dir = Path.home() / ".config" / "opencode"
         if agents_src.exists():
+            opencode_agents = opencode_dir / "AGENTS.md"
             opencode_dir.mkdir(parents=True, exist_ok=True)
             src_content = agents_src.read_text()
-            if agents_dst.exists():
-                dst_content = agents_dst.read_text()
+            if opencode_agents.exists():
+                dst_content = opencode_agents.read_text()
                 if "## totem Memory System" not in dst_content:
-                    agents_dst.write_text(dst_content.rstrip() + "\n\n" + src_content)
-                    copied.append("AGENTS.md (appended)")
+                    opencode_agents.write_text(dst_content.rstrip() + "\n\n" + src_content)
+                    copied.append("opencode: AGENTS.md (appended)")
                 else:
-                    copied.append("AGENTS.md (already present)")
+                    copied.append("opencode: AGENTS.md (already present)")
             else:
-                shutil.copy2(agents_src, agents_dst)
-                copied.append("AGENTS.md (created)")
-
-        # SKILL.md: always overwrite (totem-owned file)
-        skill_src = agent_config_dir / "SKILL.md"
-        skill_dst = skills_dir / "SKILL.md"
+                shutil.copy2(agents_src, opencode_agents)
+                copied.append("opencode: AGENTS.md (created)")
         if skill_src.exists():
+            skills_dir = opencode_dir / "skills" / "totem"
             skills_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(skill_src, skill_dst)
-            copied.append("skills/totem/SKILL.md")
+            shutil.copy2(skill_src, skills_dir / "SKILL.md")
+            copied.append("opencode: skills/totem/SKILL.md")
+
+        # Claude Code: append to project root AGENTS.md
+        if agents_src.exists():
+            claude_agents = project_dir / "AGENTS.md"
+            src_content = agents_src.read_text()
+            if claude_agents.exists():
+                dst_content = claude_agents.read_text()
+                if "## totem Memory System" not in dst_content:
+                    claude_agents.write_text(dst_content.rstrip() + "\n\n" + src_content)
+                    copied.append("claude: AGENTS.md (appended)")
+                else:
+                    copied.append("claude: AGENTS.md (already present)")
+            else:
+                shutil.copy2(agents_src, claude_agents)
+                copied.append("claude: AGENTS.md (created)")
 
     return {
         "path": str(totem_dir),

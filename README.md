@@ -58,16 +58,9 @@ This installs two entry points: `totem` (CLI) and `totem-mcp` (MCP server).
 
 ## Setup for your agent
 
-### Quick setup (recommended)
+Two steps: (1) add the MCP server, (2) run `totem init` to install agent instructions.
 
-```bash
-# Initialize totem in your project and install agent instructions
-totem init
-```
-
-This creates `.totem/totem.db` and copies AGENTS.md + SKILL.md to your opencode config (`~/.config/opencode/`). The agent will automatically load these instructions on every session.
-
-### Manual setup
+### Step 1: Add the MCP server
 
 **Claude Code:**
 ```bash
@@ -116,6 +109,20 @@ claude mcp add totem -- uvx totem-mcp
 
 The included `.mcp.json` handles this automatically. Just open your project and the agent picks it up.
 
+### Step 2: Install agent instructions
+
+```bash
+totem init
+```
+
+This creates `.totem/totem.db` and appends totem's behavioral rules to your agent config:
+- **opencode**: appends to `~/.config/opencode/AGENTS.md`, creates `~/.config/opencode/skills/totem/SKILL.md`
+- **Claude Code**: appends to `AGENTS.md` in your project root
+
+Without this step, the MCP server works but the agent won't know *when* to use it. The instructions teach agents to check memories on session start, store discoveries mid-task, and save learnings on completion.
+
+You can also call `totem_init_tool` from within the agent (MCP) to do the same thing.
+
 ## Agent instructions
 
 totem bundles two files that teach your agent how to use the memory system:
@@ -123,9 +130,15 @@ totem bundles two files that teach your agent how to use the memory system:
 - **AGENTS.md**: Mandatory behavioral rules (check memories on session start, store discoveries mid-task, save learnings on completion)
 - **SKILL.md**: Detailed workflow with code examples for each phase (discovery, mid-task, completion)
 
-These are installed to `~/.config/opencode/` by `totem init`. For other agents, copy them manually:
-- Claude Code: put AGENTS.md in your project root
-- Cursor: put AGENTS.md in your project root
+`totem init` installs these automatically. What it does per agent:
+
+| Agent | AGENTS.md | SKILL.md |
+|-------|-----------|----------|
+| opencode | Appends to `~/.config/opencode/AGENTS.md` | Creates `~/.config/opencode/skills/totem/SKILL.md` |
+| Claude Code | Appends to `./AGENTS.md` in project root | N/A (uses AGENTS.md only) |
+| Claude Desktop / Cursor | Append to `./AGENTS.md` in project root | N/A |
+
+AGENTS.md is append-safe: it checks for the `## totem Memory System` marker before writing, so your existing instructions are never overwritten.
 
 ### Tag conventions
 
