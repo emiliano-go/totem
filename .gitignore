@@ -8,3 +8,7 @@ build/
 *.db
 .srcmem/
 .totem/
+target/
+output/
+*.html
+rust-gotcha-demo-*/
