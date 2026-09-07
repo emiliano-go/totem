@@ -17,7 +17,8 @@ AI coding agents lose engineering context between sessions. They re-discover the
 - **Four memory types**: decision, invariant, gotcha, rejected_idea (each with type-specific metadata)
 - **Staleness detection**: SHA256 content hashing on linked evidence; auto-transitions items to `potentially_stale` when source code changes
 - **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges
-- **Full-text search**: SQLite FTS5 on title, statement, and details
+- **Full-text search**: SQLite FTS5 on title, statement, details, and tags
+- **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`. Context assembly searches both.
 - **Context assembly**: scored pipeline with token budget support, section ordering per spec
 - **MCP server**: expose all tools via Model Context Protocol for agent use
 - **CLI**: full command-line interface for manual operations
@@ -103,7 +104,7 @@ engineering_context_tool(tags=["api", "database"], task="Refactor auth middlewar
 ### CLI
 
 ```bash
-# Create a memory item
+# Create a memory item (rationale is optional but strongly recommended)
 totem create --type decision --title "Use FTS5 for search" \
   --statement "SQLite FTS5 is sufficient for our search needs" \
   --tags "search,sqlite" --metadata '{"rationale": "No external search dependency needed"}'
@@ -111,8 +112,11 @@ totem create --type decision --title "Use FTS5 for search" \
 # Get it back
 totem get <ITEM_ID>
 
-# Search
+# Search (full-text + tags)
 totem search --query "FTS5 search" --tags "sqlite"
+
+# List recent items
+totem list --sort created_at --limit 5
 
 # Assemble context for a task
 totem context --tags "search,sqlite" --task "Add fuzzy search" --budget 4096
@@ -124,13 +128,13 @@ All tools return JSON strings.
 
 | Tool | Description |
 |------|-------------|
-| `memory_create_tool` | Create a memory item (decision, invariant, gotcha, rejected_idea) |
+| `memory_create_tool` | Create a memory item. Provide `rationale` in metadata for decisions (strongly recommended). |
 | `memory_get_tool` | Retrieve by ID with staleness check |
-| `memory_update_tool` | Update any field (requires `reason`) |
+| `memory_update_tool` | Update any field. Provide `reason` (strongly recommended for audit trail). |
 | `memory_delete_tool` | Soft-delete (requires `reason`) |
-| `memory_list_tool` | Filtered listing by type, tags, status |
-| `memory_search_tool` | FTS5 full-text search with type/tag filters |
-| `engineering_context_tool` | Scored context assembly with token budget |
+| `memory_list_tool` | Filtered listing with `sort` param (`created_at`, `updated_at`, `importance`) |
+| `memory_search_tool` | FTS5 full-text search (includes tags) with type/tag filters |
+| `engineering_context_tool` | Scored context assembly; searches project + user DBs |
 
 ## CLI commands
 
@@ -138,28 +142,37 @@ All tools return JSON strings.
 |---------|-------------|
 | `totem create` | Create a new memory item |
 | `totem get <ID>` | Retrieve by ID (`--no-evidence` skips staleness check) |
-| `totem update <ID>` | Update an item (requires `--reason`) |
+| `totem update <ID>` | Update an item (`--reason` optional, defaults to "maintenance") |
 | `totem delete <ID>` | Soft-delete (requires `--reason`) |
-| `totem list` | List with optional type, tags, status, limit filters |
-| `totem search` | Full-text search with type/tag filters |
+| `totem list` | List with `--sort` (`created_at`, `updated_at`, `importance`) and filters |
+| `totem search` | Full-text search (includes tags) with type/tag filters |
 | `totem context` | Assemble scored context for a task |
 
 All commands output JSON to stdout.
 
 ## Memory types
 
-Each type captures a different kind of engineering knowledge and requires specific metadata:
+Each type captures a different kind of engineering knowledge:
 
-| Type | Purpose | Required metadata |
-|------|---------|-------------------|
-| `decision` | A choice that was made | `rationale` |
-| `invariant` | A rule that must hold | `verificationMethod`, `condition` |
+| Type | Purpose | Metadata |
+|------|---------|----------|
+| `decision` | A choice that was made | `rationale` (optional, but strongly recommended: explain WHY) |
+| `invariant` | A rule that must hold | `verificationMethod`, `condition` (required) |
 | `gotcha` | A non-obvious pitfall discovered | (none) |
-| `rejected_idea` | A proposal that was considered and declined | `proposal`, `reasonRejected` |
+| `rejected_idea` | A proposal that was considered and declined | `proposal`, `reasonRejected` (required) |
+
+## Hybrid memory
+
+totem stores memories in two locations:
+
+- **Project memories**: `.totem/totem.db` (in your repo, checked into version control or gitignored)
+- **User memories**: `~/.local/share/totem/totem.db` (personal preferences, global patterns)
+
+`engineering_context` searches both databases, with project memories taking precedence. This means your agent remembers project-specific decisions and your personal coding preferences across all projects.
 
 ## Context assembly
 
-The `engineering_context` tool runs a scored pipeline:
+The `engineering_context` tool runs a scored pipeline across both project and user memories:
 
 **Scoring formula:**
 ```
@@ -197,7 +210,7 @@ Core fields on every `MemoryItem`:
 | `confidence` | float | 0 to 1, default 1.0 |
 | `importance` | float | 0 to 1, default 0.5 |
 | `evidence` | list[Evidence] | Linked source code with content hashes |
-| `metadata` | dict? | Type-specific required keys |
+| `metadata` | dict? | Type-specific keys (see memory types above) |
 
 Evidence entries link to source code ranges with SHA256 hashes for staleness detection.
 

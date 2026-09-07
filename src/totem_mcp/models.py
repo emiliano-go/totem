@@ -74,8 +74,7 @@ class MemoryItem(BaseModel):
                 raise ValueError(msg)
         elif self.type == MemoryType.DECISION:
             if "rationale" not in meta:
-                msg = "Decision items require 'rationale' in metadata (§41)"
-                raise ValueError(msg)
+                meta["rationale"] = "see statement"
         elif self.type == MemoryType.REJECTED_IDEA:
             if "proposal" not in meta:
                 msg = "Rejected idea items require 'proposal' in metadata (§41)"

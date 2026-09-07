@@ -330,8 +330,18 @@ When totem is available, use its tools to persist engineering state across sessi
 
 - **`memory_create`**: Store decisions, invariants, gotchas, and rejected ideas
 - **`memory_get`**: Retrieve with automatic staleness detection
-- **`memory_search`**: Find relevant memories by tag or full-text
+- **`memory_search`**: Find relevant memories by tag or full-text (searches both project and user memories)
 - **`engineering_context`**: Assemble durable externalized working state (§26)
 - **`rejected_idea`**: Prevent re-proposing dead ends (§15/§25)
 
-totem enforces the claim discipline this methodology requires: `verificationMethod` is required on invariants (§4), `reason` is required on updates (§3), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).
+### When creating decisions
+
+Always provide `rationale` in metadata. The default is "see statement" but a real rationale is what makes memory useful across sessions. Record WHY, not just WHAT. Include alternatives considered and why they were rejected. This is the difference between a decision that teaches and one that just states.
+
+### When updating memories
+
+Always provide `reason`. The default is "maintenance" but a specific reason creates an audit trail. Future sessions can understand not just what changed, but why.
+
+### Claim discipline
+
+totem enforces: `verificationMethod` is required on invariants (§4), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).

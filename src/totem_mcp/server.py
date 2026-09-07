@@ -35,8 +35,6 @@ def memory_create_tool(
     statement: str,
     tags: list[str],
     details: str | None = None,
-    confidence: float = 1.0,
-    importance: float = 0.5,
     evidence: list[dict[str, Any]] | None = None,
     related_memory_ids: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -49,11 +47,9 @@ def memory_create_tool(
         statement: The factual claim being stored
         tags: At least one tag for categorization
         details: Optional additional details
-        confidence: Confidence in this claim (0-1, default 1.0)
-        importance: Importance of this claim (0-1, default 0.5)
         evidence: List of evidence objects with path, startLine, endLine, contentHash
         related_memory_ids: IDs of related memory items
-        metadata: Extra metadata (invariant requires 'verificationMethod')
+        metadata: Extra metadata. Decision items accept 'rationale' (strongly recommended: explain WHY this decision was made, alternatives considered). Invariant items require 'verificationMethod' and 'condition'
     """
     conn = _get_conn()
     try:
@@ -64,8 +60,6 @@ def memory_create_tool(
             statement=statement,
             tags=tags,
             details=details,
-            confidence=confidence,
-            importance=importance,
             evidence=evidence,
             related_memory_ids=related_memory_ids,
             metadata=metadata,
@@ -98,27 +92,23 @@ def memory_get_tool(id: str, include_evidence: bool = True) -> str:
 @mcp.tool()
 def memory_update_tool(
     id: str,
-    reason: str,
+    reason: str | None = None,
     title: str | None = None,
     statement: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
-    confidence: float | None = None,
-    importance: float | None = None,
     evidence: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Update a memory item. Reason is required.
+    """Update a memory item. Reason is optional but strongly recommended.
 
     Args:
         id: The memory item ID
-        reason: Required reason for this update
+        reason: Why this update was made (strongly recommended for audit trail; defaults to 'maintenance')
         title: New title
         statement: New statement
         tags: New tags
         status: New status (active, potentially_stale, invalidated)
-        confidence: New confidence (0-1)
-        importance: New importance (0-1)
         evidence: New evidence list
         metadata: New metadata
     """
@@ -132,8 +122,6 @@ def memory_update_tool(
             statement=statement,
             tags=tags,
             status=status,
-            confidence=confidence,
-            importance=importance,
             evidence=evidence,
             metadata=metadata,
         )
@@ -169,6 +157,7 @@ def memory_list_tool(
     type: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
+    sort: str | None = None,
     limit: int = 50,
 ) -> str:
     """List memory items with optional filters.
@@ -177,11 +166,12 @@ def memory_list_tool(
         type: Filter by type (decision, invariant, gotcha, rejected_idea)
         tags: Filter by tags (items must have at least one)
         status: Filter by status (active, potentially_stale, invalidated)
+        sort: Sort by 'created_at', 'updated_at' (default), or 'importance'
         limit: Maximum items to return (default 50)
     """
     conn = _get_conn()
     try:
-        result = memory_list(conn, type=type, tags=tags, status=status, limit=limit)
+        result = memory_list(conn, type=type, tags=tags, status=status, sort=sort or "updated_at", limit=limit)
         return json.dumps(result, indent=2)
     finally:
         conn.close()

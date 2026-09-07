@@ -62,6 +62,12 @@ def memory_create(
                 "Invariant items require 'verificationMethod' in metadata (§41)"
             )
 
+    if mem_type == MemoryType.DECISION:
+        if not metadata:
+            metadata = {}
+        if "rationale" not in metadata:
+            metadata["rationale"] = "see statement"
+
     parsed_evidence = [Evidence.model_validate(e) for e in (evidence or [])]
 
     item = MemoryItem(
@@ -135,7 +141,7 @@ def memory_get(
 def memory_update(
     conn: sqlite3.Connection,
     id: str,
-    reason: str,
+    reason: str | None = None,
     title: str | None = None,
     statement: str | None = None,
     tags: list[str] | None = None,
@@ -145,9 +151,9 @@ def memory_update(
     evidence: list[dict] | None = None,
     metadata: dict | None = None,
 ) -> dict | None:
-    """Update a memory item (§43 memory_update). reason is required."""
+    """Update a memory item (§43 memory_update). reason is optional (defaults to 'maintenance')."""
     if not reason:
-        raise ValueError("reason is required for updates (§3)")
+        reason = "maintenance"
 
     item = get_item(conn, id)
     if item is None:
@@ -203,10 +209,11 @@ def memory_list(
     type: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
+    sort: str = "updated_at",
     limit: int = 50,
 ) -> list[dict]:
     """List memory items with optional filters (§43 memory_list)."""
-    items = list_items(conn, type_=type, tags=tags, status=status, limit=limit)
+    items = list_items(conn, type_=type, tags=tags, status=status, sort=sort, limit=limit)
     return [item.model_dump(by_alias=True) for item in items]
 
 

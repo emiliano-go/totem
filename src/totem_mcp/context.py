@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .db import get_all_conflicts, list_items
+from .db import get_all_conflicts, list_items, connect, get_user_db_path
 from .hashing import check_staleness
 from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
@@ -59,15 +59,35 @@ def engineering_context(
 ) -> dict:
     """Assemble engineering context per §48 output ordering.
 
-    Pipeline: tag match → score → sort → truncate to budget → serialize.
+    Pipeline: tag match -> score -> sort -> truncate -> serialize.
     Conflicts and warnings are NEVER dropped for budget (§48).
-
-    §46: flagged_ambiguity items surfaced at top with blocking:true.
+    Searches both project DB and user DB (~/.local/share/totem/).
+    Project items take precedence on ID collision.
     """
-    items = list_items(conn, tags=tags, limit=200)
+    project_items = list_items(conn, tags=tags, limit=200)
+
+    user_items: list = []
+    user_db_path = get_user_db_path()
+    if user_db_path.exists():
+        user_conn = connect(user_db_path)
+        try:
+            user_items = list_items(user_conn, tags=tags, limit=200)
+        finally:
+            user_conn.close()
+
+    seen_ids: set[str] = set()
+    all_items: list = []
+    for item in project_items:
+        if item.id not in seen_ids:
+            seen_ids.add(item.id)
+            all_items.append(item)
+    for item in user_items:
+        if item.id not in seen_ids:
+            seen_ids.add(item.id)
+            all_items.append(item)
 
     scored = []
-    for item in items:
+    for item in all_items:
         if types and item.type.value not in types:
             continue
         if item.status == MemoryStatus.DELETED:

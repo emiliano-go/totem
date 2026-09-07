@@ -94,7 +94,7 @@ def get(item_id: str, no_evidence: bool) -> None:
 
 @cli.command()
 @click.argument("item_id")
-@click.option("--reason", required=True, help="Required reason for update (§3)")
+@click.option("--reason", default="maintenance", help="Reason for update (strongly recommended for audit trail)")
 @click.option("--title", default=None)
 @click.option("--statement", default=None)
 @click.option("--tags", default=None, help="Comma-separated tags")
@@ -157,13 +157,14 @@ def delete(item_id: str, reason: str) -> None:
 @click.option("--type", "mem_type", default=None, type=click.Choice(["decision", "invariant", "gotcha", "rejected_idea"]))
 @click.option("--tags", default=None, help="Comma-separated tags")
 @click.option("--status", default=None, type=click.Choice(["active", "potentially_stale", "invalidated"]))
+@click.option("--sort", default="updated_at", type=click.Choice(["created_at", "updated_at", "importance"]), help="Sort field")
 @click.option("--limit", default=50, type=int)
-def list_cmd(mem_type: str | None, tags: str | None, status: str | None, limit: int) -> None:
+def list_cmd(mem_type: str | None, tags: str | None, status: str | None, sort: str, limit: int) -> None:
     """List memory items with optional filters."""
     conn = _get_conn()
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        result = memory_list(conn, type=mem_type, tags=tag_list, status=status, limit=limit)
+        result = memory_list(conn, type=mem_type, tags=tag_list, status=status, sort=sort, limit=limit)
         click.echo(json.dumps(result, indent=2))
     finally:
         conn.close()

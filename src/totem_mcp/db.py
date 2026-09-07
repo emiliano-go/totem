@@ -38,6 +38,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
     title,
     statement,
     details,
+    tags,
     content='memory_items',
     content_rowid='rowid'
 );
@@ -45,20 +46,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
 
 CREATE_FTS_TRIGGERS = """
 CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
-    INSERT INTO memory_items_fts(rowid, title, statement, details)
-    VALUES (new.rowid, new.title, new.statement, new.details);
+    INSERT INTO memory_items_fts(rowid, title, statement, details, tags)
+    VALUES (new.rowid, new.title, new.statement, new.details,
+            REPLACE(REPLACE(new.tags, '[', ''), ']', ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
-    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details)
-    VALUES ('delete', old.rowid, old.title, old.statement, old.details);
+    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details, tags)
+    VALUES ('delete', old.rowid, old.title, old.statement, old.details,
+            REPLACE(REPLACE(old.tags, '[', ''), ']', ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
-    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details)
-    VALUES ('delete', old.rowid, old.title, old.statement, old.details);
-    INSERT INTO memory_items_fts(rowid, title, statement, details)
-    VALUES (new.rowid, new.title, new.statement, new.details);
+    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details, tags)
+    VALUES ('delete', old.rowid, old.title, old.statement, old.details,
+            REPLACE(REPLACE(old.tags, '[', ''), ']', ''));
+    INSERT INTO memory_items_fts(rowid, title, statement, details, tags)
+    VALUES (new.rowid, new.title, new.statement, new.details,
+            REPLACE(REPLACE(new.tags, '[', ''), ']', ''));
 END;
 """
 
@@ -79,6 +84,10 @@ CREATE TABLE IF NOT EXISTS conflicts (
 
 def get_db_path() -> Path:
     return Path.cwd() / ".totem" / "totem.db"
+
+
+def get_user_db_path() -> Path:
+    return Path.home() / ".local" / "share" / "totem" / "totem.db"
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -196,8 +205,11 @@ def list_items(
     type_: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
+    sort: str = "updated_at",
     limit: int = 50,
 ) -> list[MemoryItem]:
+    if sort not in ("created_at", "updated_at", "importance"):
+        sort = "updated_at"
     query = "SELECT * FROM memory_items WHERE status != 'deleted'"
     params: list[Any] = []
     if type_:
@@ -210,7 +222,7 @@ def list_items(
         placeholders = ",".join("?" for _ in tags)
         query += f" AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value IN ({placeholders}))"
         params.extend(tags)
-    query += " ORDER BY updated_at DESC LIMIT ?"
+    query += f" ORDER BY {sort} DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     return [_row_to_item(row) for row in rows]
