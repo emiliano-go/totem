@@ -246,3 +246,88 @@ def search_fts(
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [_row_to_item(row) for row in rows]
+
+
+def get_overlapping_items(
+    conn: sqlite3.Connection,
+    type_: str,
+    path: str,
+    start_line: int,
+    end_line: int,
+) -> list[MemoryItem]:
+    """Find active items of the same type with overlapping evidence ranges."""
+    rows = conn.execute(
+        """SELECT * FROM memory_items
+           WHERE type = ? AND status = 'active' AND id != ''
+           ORDER BY updated_at DESC""",
+        (type_,),
+    ).fetchall()
+    results = []
+    for row in rows:
+        item = _row_to_item(row)
+        for ev in item.evidence:
+            if ev.path == path and ev.start_line <= end_line and ev.end_line >= start_line:
+                results.append(item)
+                break
+    return results
+
+
+def insert_conflict(conn: sqlite3.Connection, conflict: Conflict) -> None:
+    """Persist a conflict to the conflicts table (§42)."""
+    from datetime import datetime, timezone
+
+    conn.execute(
+        """INSERT INTO conflicts
+           (id, item_a, item_b, claim_a, claim_b, condition,
+            resolution_options, recommended, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()),
+            conflict.item_a,
+            conflict.item_b,
+            conflict.claim_a,
+            conflict.claim_b,
+            conflict.condition,
+            json.dumps(conflict.resolution_options),
+            conflict.recommended,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def get_conflicts_for_item(conn: sqlite3.Connection, item_id: str) -> list[Conflict]:
+    """Retrieve all conflicts involving a given item."""
+    rows = conn.execute(
+        "SELECT * FROM conflicts WHERE item_a = ? OR item_b = ?",
+        (item_id, item_id),
+    ).fetchall()
+    return [
+        Conflict(
+            itemA=row["item_a"],
+            itemB=row["item_b"],
+            claimA=row["claim_a"],
+            claimB=row["claim_b"],
+            condition=row["condition"],
+            resolutionOptions=json.loads(row["resolution_options"]),
+            recommended=row["recommended"],
+        )
+        for row in rows
+    ]
+
+
+def get_all_conflicts(conn: sqlite3.Connection) -> list[Conflict]:
+    """Retrieve all stored conflicts."""
+    rows = conn.execute("SELECT * FROM conflicts").fetchall()
+    return [
+        Conflict(
+            itemA=row["item_a"],
+            itemB=row["item_b"],
+            claimA=row["claim_a"],
+            claimB=row["claim_b"],
+            condition=row["condition"],
+            resolutionOptions=json.loads(row["resolution_options"]),
+            recommended=row["recommended"],
+        )
+        for row in rows
+    ]
