@@ -1,12 +1,12 @@
 # totem
 
-[![PyPI version](https://img.shields.io/pypi/v/totem-mcp?color=blue)](https://pypi.org/project/totem-mcp/)
-[![Python](https://img.shields.io/pypi/pyversions/totem-mcp)](https://pypi.org/project/totem-mcp/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![MCP compatible](https://img.shields.io/badge/MCP-compatible-orange.svg)](https://modelcontextprotocol.io)
-[![GitHub stars](https://img.shields.io/github/stars/emiliano-go/totem)](https://github.com/emiliano-go/totem)
+[![PyPI version](https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white)](https://pypi.org/project/totem-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/totem-mcp?logo=python&logoColor=white)](https://pypi.org/project/totem-mcp/)
+[![License](https://img.shields.io/github/license/emiliano-go/totem?logo=github&logoColor=white)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
+[![Stars](https://img.shields.io/github/stars/emiliano-go/totem?logo=github&logoColor=white)](https://github.com/emiliano-go/totem)
 
-Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local SQLite database with staleness detection, conflict detection, full-text search, and structured context assembly.
+Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local Turso database with staleness detection, conflict detection, full-text search, and structured context assembly.
 
 ## Why
 
@@ -17,7 +17,7 @@ AI coding agents lose engineering context between sessions. They re-discover the
 - **Four memory types**: decision, invariant, gotcha, rejected_idea (each with type-specific metadata)
 - **Staleness detection**: SHA256 content hashing on linked evidence; auto-transitions items to `potentially_stale` when source code changes
 - **Conflict detection**: surfaces contradictory decisions or invariants on overlapping code ranges
-- **Full-text search**: SQLite FTS5 on title, statement, details, and tags
+- **Full-text search**: Turso FTS5 on title, statement, details, and tags
 - **Hybrid memory**: project memories in `.totem/`, user memories in `~/.local/share/totem/`. Context assembly searches both.
 - **Context assembly**: scored pipeline with token budget support, section ordering per spec
 - **MCP server**: expose all tools via Model Context Protocol for agent use

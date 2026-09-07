@@ -1,12 +1,13 @@
-"""SQLite storage layer for totem."""
+"""Turso storage layer for totem."""
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any
+
+import turso
 
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
@@ -34,37 +35,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
 """
 
 CREATE_FTS = """
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
-    title,
-    statement,
-    details,
-    tags,
-    content='memory_items',
-    content_rowid='rowid'
-);
-"""
-
-CREATE_FTS_TRIGGERS = """
-CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
-    INSERT INTO memory_items_fts(rowid, title, statement, details, tags)
-    VALUES (new.rowid, new.title, new.statement, new.details,
-            REPLACE(REPLACE(new.tags, '[', ''), ']', ''));
-END;
-
-CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
-    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details, tags)
-    VALUES ('delete', old.rowid, old.title, old.statement, old.details,
-            REPLACE(REPLACE(old.tags, '[', ''), ']', ''));
-END;
-
-CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
-    INSERT INTO memory_items_fts(memory_items_fts, rowid, title, statement, details, tags)
-    VALUES ('delete', old.rowid, old.title, old.statement, old.details,
-            REPLACE(REPLACE(old.tags, '[', ''), ']', ''));
-    INSERT INTO memory_items_fts(rowid, title, statement, details, tags)
-    VALUES (new.rowid, new.title, new.statement, new.details,
-            REPLACE(REPLACE(new.tags, '[', ''), ']', ''));
-END;
+CREATE INDEX IF NOT EXISTS memory_items_fts ON memory_items USING fts (title, statement, details, tags);
 """
 
 CREATE_CONFLICTS = """
@@ -90,45 +61,50 @@ def get_user_db_path() -> Path:
     return Path.home() / ".local" / "share" / "totem" / "totem.db"
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | None = None) -> turso.Connection:
     path = db_path or get_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = turso.connect(str(path), experimental_features="index_method")
     return conn
 
 
-def init_db(conn: sqlite3.Connection) -> None:
+def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
-    conn.executescript(CREATE_FTS_TRIGGERS)
     conn.executescript(CREATE_CONFLICTS)
     conn.commit()
 
 
-def _row_to_item(row: sqlite3.Row) -> MemoryItem:
+COLUMNS = [
+    "id", "type", "title", "statement", "details", "tags", "status",
+    "confidence", "importance", "evidence", "related_memory_ids",
+    "created_at", "updated_at", "verified_at", "metadata", "schema_version",
+]
+COL_IDX = {name: i for i, name in enumerate(COLUMNS)}
+
+
+def _row_to_item(row: tuple) -> MemoryItem:
+    r = COL_IDX
     return MemoryItem(
-        id=row["id"],
-        type=MemoryType(row["type"]),
-        title=row["title"],
-        statement=row["statement"],
-        details=row["details"],
-        tags=json.loads(row["tags"]),
-        status=MemoryStatus(row["status"]),
-        confidence=row["confidence"],
-        importance=row["importance"],
-        evidence=[Evidence.model_validate(e) for e in json.loads(row["evidence"])],
-        related_memory_ids=json.loads(row["related_memory_ids"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        verified_at=row["verified_at"],
-        metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+        id=row[r["id"]],
+        type=MemoryType(row[r["type"]]),
+        title=row[r["title"]],
+        statement=row[r["statement"]],
+        details=row[r["details"]],
+        tags=json.loads(row[r["tags"]]),
+        status=MemoryStatus(row[r["status"]]),
+        confidence=row[r["confidence"]],
+        importance=row[r["importance"]],
+        evidence=[Evidence.model_validate(e) for e in json.loads(row[r["evidence"]])],
+        related_memory_ids=json.loads(row[r["related_memory_ids"]]),
+        created_at=row[r["created_at"]],
+        updated_at=row[r["updated_at"]],
+        verified_at=row[r["verified_at"]],
+        metadata=json.loads(row[r["metadata"]]) if row[r["metadata"]] else None,
     )
 
 
-def insert_item(conn: sqlite3.Connection, item: MemoryItem) -> None:
+def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
     conn.execute(
         """INSERT INTO memory_items
            (id, type, title, statement, details, tags, status, confidence,
@@ -157,7 +133,7 @@ def insert_item(conn: sqlite3.Connection, item: MemoryItem) -> None:
     conn.commit()
 
 
-def get_item(conn: sqlite3.Connection, item_id: str) -> MemoryItem | None:
+def get_item(conn: turso.Connection, item_id: str) -> MemoryItem | None:
     row = conn.execute(
         "SELECT * FROM memory_items WHERE id = ? AND status != 'deleted'",
         (item_id,),
@@ -168,7 +144,7 @@ def get_item(conn: sqlite3.Connection, item_id: str) -> MemoryItem | None:
 
 
 def update_item_row(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     item_id: str,
     fields: dict[str, Any],
 ) -> None:
@@ -187,7 +163,7 @@ def update_item_row(
     conn.commit()
 
 
-def soft_delete(conn: sqlite3.Connection, item_id: str) -> None:
+def soft_delete(conn: turso.Connection, item_id: str) -> None:
     from datetime import datetime, timezone
 
     update_item_row(
@@ -201,7 +177,7 @@ def soft_delete(conn: sqlite3.Connection, item_id: str) -> None:
 
 
 def list_items(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     type_: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
@@ -229,21 +205,20 @@ def list_items(
 
 
 def search_fts(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     query: str,
     types: list[str] | None = None,
     tags: list[str] | None = None,
     include_stale: bool = False,
     limit: int = 20,
 ) -> list[MemoryItem]:
-    fts_query = " OR ".join(query.split())
     sql = """
-        SELECT m.* FROM memory_items m
-        JOIN memory_items_fts fts ON m.rowid = fts.rowid
-        WHERE memory_items_fts MATCH ?
+        SELECT m.*, fts_score(m.title, m.statement, m.details, m.tags) AS score
+        FROM memory_items m
+        WHERE fts_match(m.title, m.statement, m.details, m.tags, ?)
           AND m.status != 'deleted'
     """
-    params: list[Any] = [fts_query]
+    params: list[Any] = [query]
     if not include_stale:
         sql += " AND m.status != 'potentially_stale'"
     if types:
@@ -254,14 +229,14 @@ def search_fts(
         tag_placeholders = ",".join("?" for _ in tags)
         sql += f" AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE json_each.value IN ({tag_placeholders}))"
         params.extend(tags)
-    sql += " ORDER BY rank LIMIT ?"
+    sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [_row_to_item(row) for row in rows]
 
 
 def get_overlapping_items(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     type_: str,
     path: str,
     start_line: int,
@@ -284,7 +259,14 @@ def get_overlapping_items(
     return results
 
 
-def insert_conflict(conn: sqlite3.Connection, conflict: Conflict) -> None:
+CONFLICT_COLUMNS = [
+    "id", "item_a", "item_b", "claim_a", "claim_b", "condition",
+    "resolution_options", "recommended", "created_at",
+]
+CONFLICT_COL_IDX = {name: i for i, name in enumerate(CONFLICT_COLUMNS)}
+
+
+def insert_conflict(conn: turso.Connection, conflict: Conflict) -> None:
     """Persist a conflict to the conflicts table (§42)."""
     from datetime import datetime, timezone
 
@@ -308,7 +290,7 @@ def insert_conflict(conn: sqlite3.Connection, conflict: Conflict) -> None:
     conn.commit()
 
 
-def get_conflicts_for_item(conn: sqlite3.Connection, item_id: str) -> list[Conflict]:
+def get_conflicts_for_item(conn: turso.Connection, item_id: str) -> list[Conflict]:
     """Retrieve all conflicts involving a given item."""
     rows = conn.execute(
         "SELECT * FROM conflicts WHERE item_a = ? OR item_b = ?",
@@ -316,30 +298,30 @@ def get_conflicts_for_item(conn: sqlite3.Connection, item_id: str) -> list[Confl
     ).fetchall()
     return [
         Conflict(
-            itemA=row["item_a"],
-            itemB=row["item_b"],
-            claimA=row["claim_a"],
-            claimB=row["claim_b"],
-            condition=row["condition"],
-            resolutionOptions=json.loads(row["resolution_options"]),
-            recommended=row["recommended"],
+            itemA=row[CONFLICT_COL_IDX["item_a"]],
+            itemB=row[CONFLICT_COL_IDX["item_b"]],
+            claimA=row[CONFLICT_COL_IDX["claim_a"]],
+            claimB=row[CONFLICT_COL_IDX["claim_b"]],
+            condition=row[CONFLICT_COL_IDX["condition"]],
+            resolutionOptions=json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
+            recommended=row[CONFLICT_COL_IDX["recommended"]],
         )
         for row in rows
     ]
 
 
-def get_all_conflicts(conn: sqlite3.Connection) -> list[Conflict]:
+def get_all_conflicts(conn: turso.Connection) -> list[Conflict]:
     """Retrieve all stored conflicts."""
     rows = conn.execute("SELECT * FROM conflicts").fetchall()
     return [
         Conflict(
-            itemA=row["item_a"],
-            itemB=row["item_b"],
-            claimA=row["claim_a"],
-            claimB=row["claim_b"],
-            condition=row["condition"],
-            resolutionOptions=json.loads(row["resolution_options"]),
-            recommended=row["recommended"],
+            itemA=row[CONFLICT_COL_IDX["item_a"]],
+            itemB=row[CONFLICT_COL_IDX["item_b"]],
+            claimA=row[CONFLICT_COL_IDX["claim_a"]],
+            claimB=row[CONFLICT_COL_IDX["claim_b"]],
+            condition=row[CONFLICT_COL_IDX["condition"]],
+            resolutionOptions=json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
+            recommended=row[CONFLICT_COL_IDX["recommended"]],
         )
         for row in rows
     ]

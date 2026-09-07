@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
 
+import turso
 from mcp.server.fastmcp import FastMCP
 
 from .context import engineering_context
@@ -22,7 +22,7 @@ from .tools import (
 mcp = FastMCP("totem")
 
 
-def _get_conn() -> sqlite3.Connection:
+def _get_conn() -> turso.Connection:
     conn = connect()
     init_db(conn)
     return conn
@@ -188,7 +188,7 @@ def memory_search_tool(
     """Hybrid tag + full-text search.
 
     Args:
-        query: Search query (full-text via SQLite FTS5)
+        query: Search query (full-text via Turso FTS5)
         types: Filter by memory types
         tags: Filter by tags
         include_stale: Whether to include potentially stale items

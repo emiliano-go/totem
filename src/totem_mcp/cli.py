@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import click
+import turso
 
 from .context import engineering_context
 from .db import connect, init_db
@@ -19,7 +19,7 @@ from .tools import (
 )
 
 
-def _get_conn() -> sqlite3.Connection:
+def _get_conn() -> turso.Connection:
     conn = connect()
     init_db(conn)
     return conn

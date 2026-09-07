@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+import turso
 
 from .conflicts import detect_conflicts
 from .db import (
@@ -33,7 +34,7 @@ def _now() -> str:
 
 
 def memory_create(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     type: str,
     title: str,
     statement: str,
@@ -101,7 +102,7 @@ def memory_create(
 
 
 def memory_get(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     id: str,
     include_evidence: bool = True,
 ) -> dict | None:
@@ -139,7 +140,7 @@ def memory_get(
 
 
 def memory_update(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     id: str,
     reason: str | None = None,
     title: str | None = None,
@@ -192,7 +193,7 @@ def memory_update(
     return updated.model_dump(by_alias=True) if updated else None
 
 
-def memory_delete(conn: sqlite3.Connection, id: str, reason: str) -> dict:
+def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     """Soft-delete a memory item (§43 memory_delete). reason is required."""
     if not reason:
         raise ValueError("reason is required for deletion (§3)")
@@ -205,7 +206,7 @@ def memory_delete(conn: sqlite3.Connection, id: str, reason: str) -> dict:
 
 
 def memory_list(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     type: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
@@ -218,7 +219,7 @@ def memory_list(
 
 
 def memory_search(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     query: str,
     types: list[str] | None = None,
     tags: list[str] | None = None,

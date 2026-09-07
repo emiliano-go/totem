@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sqlite3
+import turso
 
 from .db import get_all_conflicts, list_items, connect, get_user_db_path
 from .hashing import check_staleness
@@ -50,7 +50,7 @@ def _serialize_conflict(c: Conflict) -> str:
 
 
 def engineering_context(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     tags: list[str],
     task: str | None = None,
     token_budget: int | None = None,

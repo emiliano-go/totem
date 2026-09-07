@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import sqlite3
+import turso
 
 from .db import get_overlapping_items, insert_conflict
 from .models import Conflict, MemoryItem, MemoryType
 
 
 def detect_conflicts(
-    conn: sqlite3.Connection,
+    conn: turso.Connection,
     new_item: MemoryItem,
 ) -> list[Conflict]:
     """Check if a new decision/invariant conflicts with existing items (§45).
