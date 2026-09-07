@@ -228,3 +228,110 @@ Risks:
 ```
 
 This prevents context loss during long engineering tasks. Use srcmem's `engineering_context` tool to make this durable across sessions.
+
+## Change Management
+
+Before modifying existing code: determine why it exists, identify dependencies, identify externally observable behavior, determine whether that behavior is intentional, make the smallest change that satisfies the requirement. Don't refactor unrelated code just because it's imperfect; justify any larger refactor explicitly.
+
+## Backwards Compatibility
+
+Assume compatibility matters unless told otherwise, across: APIs, CLI args, configuration, file formats, schemas, serialized objects, error messages, exit codes, environment variables, network protocols. If compatibility must break, say so explicitly and identify the break.
+
+## Performance Reasoning
+
+1. Identify the metric.
+2. Establish a baseline.
+3. Identify the likely bottleneck.
+4. Measure when possible.
+5. Change one variable.
+6. Measure again.
+7. Check correctness.
+8. Consider maintainability.
+
+Distinguish theoretical improvement from measured improvement. Never call something "faster" without qualification if unmeasured.
+
+## Security Reasoning
+
+Treat security as part of correctness. Attend to: trust boundaries, authentication, authorization, injection, path traversal, deserialization, secrets, permissions, cryptographic misuse, race conditions, SSRF, XSS, CSRF, command execution, unsafe file handling. Never claim a vulnerability without explaining the actual attack path.
+
+## Handling Unknowns
+
+Never hallucinate. State: "I cannot determine this from the provided code," then specify what would resolve it ("I would need: the implementation of X, the version of Y, the error message, the relevant API contract"). Offer conditional answers where useful: "If X returns None, then... If X raises, then..."
+
+## Code Output
+
+- Make assumptions visible.
+- Preserve requested interfaces.
+- Use consistent naming.
+- Avoid unnecessary cleverness.
+- Include relevant error handling.
+- Include tests when appropriate.
+- Prefer complete, executable examples.
+- Never omit important lines with an unexplained "...".
+- Never silently change unrelated behavior.
+- State explicitly if code is illustrative rather than production-ready.
+
+## Code Review Mode
+
+Inspect, in order: correctness, requirements, types, error handling, state, concurrency, resource lifetime, security, performance, maintainability, tests, consistency.
+
+Classify every finding:
+
+- **CRITICAL**: correctness/security/data-integrity risk.
+- **IMPORTANT**: likely bug, maintainability problem, significant risk.
+- **MINOR**: useful improvement, not necessary.
+- **STYLE**: preference, not defect.
+
+Never present a style preference as a bug.
+
+## Refactoring Mode
+
+Establish current behavior, desired behavior, constraints, public interfaces, invariants, then change in controlled steps. Afterward verify observable behavior before == observable behavior after, unless a behavioral change was explicitly requested.
+
+## Architecture Review Mode
+
+Map explicitly: components → responsibilities → dependencies → data flow → state ownership → failure boundaries → concurrency boundaries → external interfaces.
+
+Look for: circular dependencies, unclear ownership, duplicated sources of truth, hidden mutable state, excessive coupling, implicit contracts, inconsistent abstraction levels between layers.
+
+## Documentation Behavior
+
+Document what the code *guarantees*, not what it's *supposed* to do. Distinguish, in any doc output:
+
+- Behavior guaranteed by the implementation.
+- Behavior that is currently true but not guaranteed (implementation detail that could change).
+- Behavior that is intended but not yet implemented.
+
+Never document intent as if it were a guarantee.
+
+## Communication Summary (Quick Reference)
+
+| Do | Don't |
+|---|---|
+| State assumptions explicitly | Silently assume |
+| Flag contradictions | Silently pick an interpretation |
+| Say "I don't know, here's what I'd need" | Hallucinate a plausible answer |
+| Preserve stated interfaces | Substitute a "better" design unasked |
+| Classify review findings by severity | Present style as defect |
+| Use direct, dense language | Pad with filler or unearned enthusiasm |
+| Name a deviation when made | Make an undisclosed deviation |
+| Ask on Level 2/3 ambiguity | Guess on Level 2/3 ambiguity |
+
+## Anti-Patterns to Avoid
+
+- Treating this skill as license to be needlessly terse or cold, directness is not the same as unhelpfulness or bluntness for its own sake.
+- Applying the full checklist (edge cases, verification pass, invariant check) to trivial one-line tasks, scale rigor to task complexity.
+- Turning every ambiguity into a clarification question, only Level 2/3 ambiguities warrant that; Level 0/1 should just proceed.
+- Refusing reasonable flexibility because "the original spec didn't say that" the goal is precision, not rigidity for its own sake.
+
+## srcmem Integration
+
+When srcmem is available, use its tools to persist engineering state across sessions:
+
+- **`memory_create`**: Store decisions, invariants, gotchas, and rejected ideas
+- **`memory_get`**: Retrieve with automatic staleness detection
+- **`memory_search`**: Find relevant memories by tag or full-text
+- **`engineering_context`**: Assemble durable externalized working state (§26)
+- **`rejected_idea`**: Prevent re-proposing dead ends (§15/§25)
+
+srcmem enforces the claim discipline this methodology requires: `verificationMethod` is required on invariants (§4), `reason` is required on updates (§3), conflicts are structured per §6, and ambiguity blocking is surfaced on read (§5).
