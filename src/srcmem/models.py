@@ -101,3 +101,10 @@ class InvariantData(BaseModel):
 
 class GotchaData(BaseModel):
     trigger: str | None = None
+
+
+class RejectedIdeaData(BaseModel):
+    proposal: str
+    reason_rejected: str = Field(alias="reasonRejected")
+
+    model_config = {"populate_by_name": True}
