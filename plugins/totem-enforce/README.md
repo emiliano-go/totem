@@ -1,11 +1,11 @@
 # totem
 
-Agent enforcement plugin for the [totem](https://github.com/emiliano-go/totem) memory system. Forces agents to search totem memory before reading, grepping, or running bash commands.
+Agent enforcement plugin for the [totem](https://github.com/emiliano-go/totem) memory system. Forces agents to search totem memory before reading, grepping, or running bash commands. Supports OpenCode, Claude Code, and Kimi Code.
 
 ## Install
 
 ```bash
-npm install totem
+npm install @emiliano-go/totem
 ```
 
 This installs:
@@ -14,7 +14,7 @@ This installs:
 
 ## How it works
 
-The plugin intercepts `read`, `grep`, `glob`, and `bash` tool calls. When totem has memory related to what you're accessing, it blocks the call and redirects you to search memory first.
+The plugin intercepts `read`, `grep`, `glob`, and `bash` tool calls (including bash sub-commands like `grep`, `find`, `cat`, `sed`, etc.). When totem has memory related to what you're accessing, it blocks the call and redirects you to search memory first.
 
 ```
 # Without totem: agent reads file directly
@@ -27,15 +27,27 @@ read /path/to/file.py
   → agent reads file with full context
 ```
 
+## Supported agents
+
+| Agent | Hook type | Auto-configured? |
+|-------|-----------|-----------------|
+| OpenCode | `tool.execute.before` JS plugin | Yes (`npx totem`) |
+| Claude Code | `PreToolUse` hooks (`.claude/settings.json`) | Yes (`npx totem`) |
+| Kimi Code | `PreToolUse` hooks (`~/.kimi-code/config.toml`) | Yes (`npx totem`) |
+
 ## Setup
 
-### opencode
+### OpenCode
 
-Add to `~/.config/opencode/opencode.json`:
+```bash
+npx @emiliano-go/totem
+```
+
+Or manually add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["totem"],
+  "plugin": ["@emiliano-go/totem"],
   "mcp": {
     "totem": {
       "type": "local",
@@ -49,28 +61,31 @@ Add to `~/.config/opencode/opencode.json`:
 ### Claude Code
 
 ```bash
+npx @emiliano-go/totem
+# Or manually:
 claude mcp add totem -- uvx totem-mcp
 ```
 
-### Claude Desktop / Cursor / Windsurf
+### Kimi Code
 
-Add to config:
-
-```json
-{
-  "mcpServers": {
-    "totem": {
-      "command": "uvx",
-      "args": ["totem-mcp"]
-    }
-  }
-}
+```bash
+npx @emiliano-go/totem
 ```
 
 ## Requirements
 
 - Python 3.13+ (for the MCP server)
 - `uvx` or `pip` (auto-installed by the plugin)
+
+## Development
+
+```bash
+# Run JS tests
+node test-tokenize.js
+
+# Run Python tests
+python3 test-enforce.py
+```
 
 ## License
 

@@ -14,14 +14,16 @@ function tokenize(sk) {
   if (!m) return []
   const [, t, raw] = m
   if (t === "bash") {
-    const cmd = raw.replace(/^cd\s+\S+\s*&&\s*/, "").replace(/^cd\s+\S+\s*;\s*/, "").trim()
+    let cmd = raw.replace(/^cd\s+\S+\s*&&\s*/, "").replace(/^cd\s+\S+\s*;\s*/, "").trim()
+    // Strip additional cd chains
+    cmd = cmd.replace(/^cd\s+\S+\s*&&\s*/, "").replace(/^cd\s+\S+\s*;\s*/, "").trim()
     const parts = cmd.split(/\s+/)
     const first = parts[0]?.split("/").pop()?.toLowerCase()
 
     // If first word is a sub-command that searches content, tokenize the full command
     if (first && SUBCMDS.test(first)) {
       return [...new Set(
-        stripSpecials(cmd).split(/[/\\._\- =,]+/)
+        stripSpecials(cmd).split(/[/\\._\- =,\t]+/)
           .map(w => w.toLowerCase())
           .filter(w => w.length > 2 && !STOP.has(w))
       )]
@@ -29,7 +31,7 @@ function tokenize(sk) {
     // Otherwise just use the command name
     return first && first.length > 2 ? [first] : []
   }
-  return [...new Set(stripSpecials(raw).split(/[/\\._\- =,]+/).map(w => w.toLowerCase()).filter(w => w.length > 2 && !STOP.has(w)))]
+  return [...new Set(stripSpecials(raw).split(/[/\\._\- =,\t]+/).map(w => w.toLowerCase()).filter(w => w.length > 2 && !STOP.has(w)))]
 }
 
 const STOP = new Set(["the", "and", "for", "not", "with", "from", "this", "that"])
@@ -79,7 +81,7 @@ export default async ({ directory } = {}) => {
       let redir = "memory_search_tool"
       if (t === "read") redir = "engineering_context_tool"
       if (t === "bash") redir = "memory_commands_tool"
-      throw new Error(`Totem has memory about this. Use ${redir} first. Only ${t} the codebase if memory returns nothing relevant.`)
+      throw new Error(`Totem has memory about this. Use ${redir} first. Only ${t} the codebase if memory returns nothing relevant. Do not bypass by using bash to run ${t} indirectly.`)
     },
     "tool.execute.after": async (inp, out) => {
       if (inp.tool === "read" && out.args?.filePath) storeImpl(dir, out.args.filePath)
