@@ -2,10 +2,10 @@
 
 <p align="center">
   <a href="https://pypi.org/project/totem-mcp/">
-    <img src="https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white&style=for-the-badge" alt="PyPI">
+    <img src="https://img.shields.io/pypi/v/totem-mcp?logo=pypi&logoColor=white&style=for-the-badge&cacheSeconds=0" alt="PyPI">
   </a>
   <a href="https://pypi.org/project/totem-mcp/">
-    <img src="https://img.shields.io/pypi/pyversions/totem-mcp?logo=python&logoColor=white&style=for-the-badge" alt="Python">
+    <img src="https://img.shields.io/pypi/pyversions/totem-mcp?logo=python&logoColor=white&style=for-the-badge&cacheSeconds=0" alt="Python">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-10AC84?style=for-the-badge" alt="License">
