@@ -196,3 +196,15 @@ def memory_delete(conn: sqlite3.Connection, id: str, reason: str) -> dict:
     soft_delete(conn, id)
     print(f"[srcmem] Deleted {id}: {reason}")
     return {"id": id, "status": "deleted"}
+
+
+def memory_list(
+    conn: sqlite3.Connection,
+    type: str | None = None,
+    tags: list[str] | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List memory items with optional filters (§43 memory_list)."""
+    items = list_items(conn, type_=type, tags=tags, status=status, limit=limit)
+    return [item.model_dump(by_alias=True) for item in items]
