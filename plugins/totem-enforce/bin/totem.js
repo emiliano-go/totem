@@ -31,23 +31,39 @@ function copyFile(src, dest) {
 
 if (!hasCommand("totem-mcp --version")) {
   console.log("[totem] totem-mcp not found. Installing...");
-  if (hasCommand("pip --version") || hasCommand("pip3 --version")) {
+  let installed = false;
+
+  // Try pipx first (works on externally-managed Python like Arch Linux)
+  if (!installed && hasCommand("pipx --version")) {
+    try {
+      execSync("pipx install totem-mcp", { stdio: "inherit", timeout: 120000 });
+      installed = true;
+    } catch {}
+  }
+
+  // Try uvx (runs in isolated env, no system Python conflict)
+  if (!installed && hasCommand("uvx --version")) {
+    try {
+      execSync("uvx --install totem-mcp", { stdio: "inherit", timeout: 60000 });
+      installed = true;
+    } catch {}
+  }
+
+  // Try pip (may fail on externally-managed environments)
+  if (!installed && (hasCommand("pip --version") || hasCommand("pip3 --version"))) {
     const pip = hasCommand("pip --version") ? "pip" : "pip3";
     try {
-      execSync(`${pip} install totem-mcp`, { stdio: "inherit", timeout: 120000 });
-    } catch {
-      console.error(`[totem] ${pip} install failed. Try: pip install totem-mcp`);
-      process.exit(1);
-    }
-  } else if (hasCommand("uvx --version")) {
-    try {
-      execSync("uvx totem-mcp --version", { stdio: "inherit", timeout: 60000 });
-    } catch {
-      console.error("[totem] Failed. Try: uvx totem-mcp or pip install totem-mcp");
-      process.exit(1);
-    }
-  } else {
-    console.error("[totem] No Python found. Install: pip install totem-mcp");
+      execSync(`${pip} install --user totem-mcp`, { stdio: "inherit", timeout: 120000 });
+      installed = true;
+    } catch {}
+  }
+
+  // Check if it became available (e.g. already installed via pipx/uvx)
+  if (!installed && !hasCommand("totem-mcp --version")) {
+    console.error("[totem] Install failed. Try one of:");
+    console.error("  pipx install totem-mcp");
+    console.error("  uvx --install totem-mcp");
+    console.error("  pip install --user totem-mcp");
     process.exit(1);
   }
 }
@@ -58,7 +74,11 @@ console.log(`[totem] ${version}`);
 // ── 2. Configure OpenCode ─────────────────────────────────────────
 
 const opencodeDir = path.join(os.homedir(), ".config", "opencode", "plugins");
-const opencodeConfigPath = path.join(os.homedir(), ".config", "opencode", "opencode.json");
+const opencodeBase = path.join(os.homedir(), ".config", "opencode");
+const opencodeJsonPath = path.join(opencodeBase, "opencode.json");
+const opencodeJsoncPath = path.join(opencodeBase, "opencode.jsonc");
+const opencodeConfigPath = fs.existsSync(opencodeJsoncPath) ? opencodeJsoncPath : opencodeJsonPath;
+
 if (hasCommand("opencode --version")) {
   console.log("[totem] Configuring OpenCode...");
   mkdirp(opencodeDir);
@@ -67,10 +87,13 @@ if (hasCommand("opencode --version")) {
     path.join(opencodeDir, "totem-enforce.js")
   );
 
-  // Register plugin and MCP server in opencode.json
+  // Register plugin and MCP server in opencode config
   if (fs.existsSync(opencodeConfigPath)) {
     try {
-      const config = JSON.parse(fs.readFileSync(opencodeConfigPath, "utf-8"));
+      // Strip JSONC comments before parsing
+      let raw = fs.readFileSync(opencodeConfigPath, "utf-8");
+      raw = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+      const config = JSON.parse(raw);
       let changed = false;
 
       const pluginEntry = "@emiliano-go/totem";
@@ -78,9 +101,9 @@ if (hasCommand("opencode --version")) {
       if (!config.plugin.includes(pluginEntry)) {
         config.plugin.push(pluginEntry);
         changed = true;
-        console.log(`  → Added ${pluginEntry} to opencode.json`);
+        console.log(`  → Added ${pluginEntry} to ${path.basename(opencodeConfigPath)}`);
       } else {
-        console.log(`  → ${pluginEntry} already in opencode.json`);
+        console.log(`  → ${pluginEntry} already in ${path.basename(opencodeConfigPath)}`);
       }
 
       if (!config.mcp) config.mcp = {};
@@ -93,7 +116,7 @@ if (hasCommand("opencode --version")) {
           enabled: true,
         };
         changed = true;
-        console.log(`  → Set totem MCP server in opencode.json`);
+        console.log(`  → Set totem MCP server in ${path.basename(opencodeConfigPath)}`);
       } else {
         console.log(`  → totem MCP server already correct`);
       }
@@ -102,7 +125,7 @@ if (hasCommand("opencode --version")) {
         fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
       }
     } catch (e) {
-      console.log(`  → Could not update opencode.json: ${e.message}`);
+      console.log(`  → Could not update ${path.basename(opencodeConfigPath)}: ${e.message}`);
     }
   } else {
     // Create config with plugin and MCP server
@@ -116,7 +139,7 @@ if (hasCommand("opencode --version")) {
         },
       },
     };
-    fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
+    fs.writeFileSync(opencodeJsonPath, JSON.stringify(config, null, 2) + "\n");
     console.log(`  → Created opencode.json with plugin and MCP server`);
   }
 }
