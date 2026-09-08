@@ -67,27 +67,55 @@ if (hasCommand("opencode --version")) {
     path.join(opencodeDir, "totem-enforce.js")
   );
 
-  // Register plugin in opencode.json
+  // Register plugin and MCP server in opencode.json
   if (fs.existsSync(opencodeConfigPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(opencodeConfigPath, "utf-8"));
+      let changed = false;
+
       const pluginEntry = "@emiliano-go/totem";
       if (!config.plugin) config.plugin = [];
       if (!config.plugin.includes(pluginEntry)) {
         config.plugin.push(pluginEntry);
-        fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
+        changed = true;
         console.log(`  → Added ${pluginEntry} to opencode.json`);
       } else {
         console.log(`  → ${pluginEntry} already in opencode.json`);
+      }
+
+      if (!config.mcp) config.mcp = {};
+      if (!config.mcp.totem) {
+        config.mcp.totem = {
+          type: "local",
+          command: ["uvx", "totem-mcp"],
+          enabled: true,
+        };
+        changed = true;
+        console.log(`  → Added totem MCP server to opencode.json`);
+      } else {
+        console.log(`  → totem MCP server already in opencode.json`);
+      }
+
+      if (changed) {
+        fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
       }
     } catch (e) {
       console.log(`  → Could not update opencode.json: ${e.message}`);
     }
   } else {
-    // Create minimal config
-    const config = { plugin: ["@emiliano-go/totem"], mcp: {} };
+    // Create config with plugin and MCP server
+    const config = {
+      plugin: ["@emiliano-go/totem"],
+      mcp: {
+        totem: {
+          type: "local",
+          command: ["uvx", "totem-mcp"],
+          enabled: true,
+        },
+      },
+    };
     fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
-    console.log(`  → Created opencode.json with @emiliano-go/totem plugin`);
+    console.log(`  → Created opencode.json with plugin and MCP server`);
   }
 }
 
