@@ -90,7 +90,7 @@ if (hasCommand("opencode --version")) {
   // Register plugin and MCP server in opencode config
   if (fs.existsSync(opencodeConfigPath)) {
     try {
-      // Strip JSONC comments before parsing — but only outside string
+      // Strip JSONC comments before parsing, but only outside string
       // literals, so URLs like "https://..." survive.
       let raw = fs.readFileSync(opencodeConfigPath, "utf-8");
       raw = raw.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, s) => s || "");
