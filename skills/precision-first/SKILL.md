@@ -362,10 +362,10 @@ Never present an assumption as a fact. Use calibrated language in `statement`.
 ### When flagging ambiguities (§5)
 
 Always provide `question`, `interpretations`, and `impact`. Impact levels:
-- `low`: cosmetic, no implementation effect — proceed
-- `medium`: could affect naming or minor details — pick convention
-- `high`: could change API behavior, performance, or correctness — ask or state assumption
-- `critical`: risk of data loss, security, or irreversible damage — never guess
+- `low`: cosmetic, no implementation effect; proceed
+- `medium`: could affect naming or minor details; pick convention
+- `high`: could change API behavior, performance, or correctness; ask or state assumption
+- `critical`: risk of data loss, security, or irreversible damage; never guess
 
 Blocking ambiguities (`impact: high|critical`) are surfaced in `engineering_context` output. The agent must resolve or explicitly assume before proceeding.
 
