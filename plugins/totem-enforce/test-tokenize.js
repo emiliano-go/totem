@@ -57,7 +57,7 @@ function suite(name, fn) {
 
 // ── Tests ──
 
-suite("tokenize() — read", () => {
+suite("tokenize(): read", () => {
   test("extracts words from file path", () => {
     const r = tokenize("read:/home/eclipse/.config/opencode/opencode.json");
     assert(r.includes("opencode"));
@@ -121,7 +121,7 @@ suite("tokenize() — read", () => {
   });
 });
 
-suite("tokenize() — grep", () => {
+suite("tokenize(): grep", () => {
   test("extracts pattern words", () => {
     const r = tokenize("grep:MemoryType");
     assert(r.includes("memorytype"));
@@ -167,7 +167,7 @@ suite("tokenize() — grep", () => {
   });
 });
 
-suite("tokenize() — glob", () => {
+suite("tokenize(): glob", () => {
   test("extracts directory words", () => {
     const r = tokenize("glob:src/**/*.python");
     assert(r.includes("src"));
@@ -202,7 +202,7 @@ suite("tokenize() — glob", () => {
   });
 });
 
-suite("tokenize() — bash (simple commands)", () => {
+suite("tokenize(): bash (simple commands)", () => {
   test("simple command returns command name", () => {
     assert.deepStrictEqual(tokenize("bash:uvx totem-mcp"), ["uvx"]);
   });
@@ -246,7 +246,7 @@ suite("tokenize() — bash (simple commands)", () => {
   });
 });
 
-suite("tokenize() — bash (sub-commands)", () => {
+suite("tokenize(): bash (sub-commands)", () => {
   test("grep sub-command tokenizes full command", () => {
     const r = tokenize("bash:grep -r MemoryType src/");
     assert(r.includes("memorytype"));
@@ -347,7 +347,7 @@ suite("tokenize() — bash (sub-commands)", () => {
   });
 });
 
-suite("tokenize() — bash (edge cases)", () => {
+suite("tokenize(): bash (edge cases)", () => {
   test("cd prefix stripped", () => {
     const r = tokenize("bash:cd src && grep -r Foo .");
     assert(r.includes("foo"));
@@ -401,7 +401,7 @@ suite("tokenize() — bash (edge cases)", () => {
   });
 });
 
-suite("tokenize() — STOP words", () => {
+suite("tokenize(): STOP words", () => {
   test("filters 'the'", () => {
     assert(!tokenize("grep:the quick brown").includes("the"));
   });
@@ -441,7 +441,7 @@ suite("tokenize() — STOP words", () => {
   });
 });
 
-suite("tokenize() — deduplication", () => {
+suite("tokenize(): deduplication", () => {
   test("deduplicates repeated words", () => {
     const r = tokenize("bash:grep -r config config/");
     assert(r.filter(w => w === "config").length === 1);
@@ -461,7 +461,7 @@ suite("tokenize() — deduplication", () => {
   });
 });
 
-suite("tokenize() — input validation", () => {
+suite("tokenize(): input validation", () => {
   test("empty string returns empty", () => {
     assert.deepStrictEqual(tokenize(""), []);
   });
