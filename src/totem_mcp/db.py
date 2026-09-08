@@ -43,7 +43,7 @@ CREATE_FTS = """
 CREATE INDEX IF NOT EXISTS memory_items_fts ON memory_items USING fts (title, statement, details, tags);
 """
 # NOTE: This FTS index uses Turso/libSQL's FTS5 implementation. It is NOT compatible
-# with standard sqlite3's FTS5 — the internal schema entries (__turso_internal_fts_dir_*)
+# with standard sqlite3's FTS5: the internal schema entries (__turso_internal_fts_dir_*)
 # cause "malformed database schema" errors if accessed via `import sqlite3`. Use pyturso
 # exclusively for all database access.
 
