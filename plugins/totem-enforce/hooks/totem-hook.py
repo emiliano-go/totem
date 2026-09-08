@@ -3,9 +3,9 @@
 
 Single script, three subcommands:
 
-  pre    PreToolUse (matcher ".*") — read gate + commit-gate enforcement
-  post   PostToolUse (matcher "Read|Edit|Write|MultiEdit|NotebookEdit") — arm gates
-  clear  UserPromptSubmit — reset per-turn state
+  pre    PreToolUse (matcher ".*"): read gate + commit-gate enforcement
+  post   PostToolUse (matcher "Read|Edit|Write|MultiEdit|NotebookEdit"): arm gates
+  clear  UserPromptSubmit: reset per-turn state
 
 Behavior:
   1. Read gate: if an implementation memory exists for the file path, deny the
@@ -41,6 +41,11 @@ REGISTER_WRITE = "mcp__totem__register_file_write_tool"
 READ_TOOLS = ("Read", "read")
 WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit", "edit", "write")
 SEARCH_TOOLS = ("Grep", "grep", "Glob", "glob", "Bash", "bash")
+
+
+def input_path(tool_input: dict) -> str:
+    # Claude Code sends file_path/filePath; Kimi Code sends path.
+    return tool_input.get("filePath") or tool_input.get("file_path") or tool_input.get("path") or ""
 
 
 # ── State ─────────────────────────────────────────────────────────
@@ -118,7 +123,7 @@ def build_search_key(tool_name: str, tool_input: dict) -> str:
     if tool_name in ("Glob", "glob"):
         return f"glob:{tool_input.get('pattern', '')}"
     if tool_name in READ_TOOLS:
-        return f"read:{tool_input.get('filePath', tool_input.get('file_path', ''))}"
+        return f"read:{input_path(tool_input)}"
     if tool_name in ("Bash", "bash"):
         return f"bash:{tool_input.get('command', '')}"
     return ""
@@ -127,7 +132,7 @@ def build_search_key(tool_name: str, tool_input: dict) -> str:
 def has_memory_for(tool_name: str, tool_input: dict, project_dir: str) -> bool:
     """Dispatch the memory check per tool kind."""
     if tool_name in READ_TOOLS:
-        file_path = tool_input.get("filePath", tool_input.get("file_path", ""))
+        file_path = input_path(tool_input)
         if not file_path:
             return False
         # Gate on real file memories only (implementation kind, matching path).
@@ -239,7 +244,7 @@ def cmd_post(payload: dict) -> None:
     tool_input = payload.get("tool_input", {})
     session_id = payload.get("session_id") or str(os.getppid())
 
-    file_path = tool_input.get("filePath", tool_input.get("file_path", ""))
+    file_path = input_path(tool_input)
     if not file_path:
         allow()
 
