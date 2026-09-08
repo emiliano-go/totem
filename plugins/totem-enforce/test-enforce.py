@@ -220,5 +220,26 @@ class TestFailOpen(GateTestCase):
         self.assertIsNone(state["pending_write"])
 
 
+class TestKimiPathSchema(GateTestCase):
+    # Kimi Code sends the file path as tool_input.path (not filePath/file_path).
+    def test_post_read_arms_gate_with_path_key(self):
+        run_cmd(hook.cmd_post, self.payload("Read", {"path": "/a/b.py"}))
+        reason = run_denied(hook.cmd_pre, self.payload("Grep", {"pattern": "foo"}))
+        self.assertIsNotNone(reason)
+        self.assertIn("register_file_read_tool", reason)
+
+    def test_post_write_arms_gate_with_path_key(self):
+        run_cmd(hook.cmd_post, self.payload("Edit", {"path": "/a/c.py"}))
+        reason = run_denied(hook.cmd_pre, self.payload("Read", {"path": "/a/b.py"}))
+        self.assertIsNotNone(reason)
+        self.assertIn("register_file_write_tool", reason)
+
+    def test_read_gate_fires_with_path_key(self):
+        with patch.object(hook, "totem_search", return_value=True):
+            reason = run_denied(hook.cmd_pre, self.payload("Read", {"path": "/a/b.py"}))
+        self.assertIsNotNone(reason)
+        self.assertIn("memory", reason)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
