@@ -1,6 +1,6 @@
 [project]
 name = "totem-mcp"
-version = "0.4.0"
+version = "0.4.1"
 description = "Persistent memory layer for engineering agents"
 readme = "README.md"
 license = "MIT"

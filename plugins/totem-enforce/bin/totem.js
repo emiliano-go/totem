@@ -58,6 +58,7 @@ console.log(`[totem] ${version}`);
 // ── 2. Configure OpenCode ─────────────────────────────────────────
 
 const opencodeDir = path.join(os.homedir(), ".config", "opencode", "plugins");
+const opencodeConfigPath = path.join(os.homedir(), ".config", "opencode", "opencode.json");
 if (hasCommand("opencode --version")) {
   console.log("[totem] Configuring OpenCode...");
   mkdirp(opencodeDir);
@@ -65,6 +66,29 @@ if (hasCommand("opencode --version")) {
     path.join(PKG_DIR, ".opencode", "plugins", "totem-enforce.js"),
     path.join(opencodeDir, "totem-enforce.js")
   );
+
+  // Register plugin in opencode.json
+  if (fs.existsSync(opencodeConfigPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(opencodeConfigPath, "utf-8"));
+      const pluginEntry = "@emiliano-go/totem";
+      if (!config.plugin) config.plugin = [];
+      if (!config.plugin.includes(pluginEntry)) {
+        config.plugin.push(pluginEntry);
+        fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
+        console.log(`  → Added ${pluginEntry} to opencode.json`);
+      } else {
+        console.log(`  → ${pluginEntry} already in opencode.json`);
+      }
+    } catch (e) {
+      console.log(`  → Could not update opencode.json: ${e.message}`);
+    }
+  } else {
+    // Create minimal config
+    const config = { plugin: ["@emiliano-go/totem"], mcp: {} };
+    fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2) + "\n");
+    console.log(`  → Created opencode.json with @emiliano-go/totem plugin`);
+  }
 }
 
 // ── 3. Configure Claude Code ──────────────────────────────────────
