@@ -2,7 +2,7 @@
   <img src="assets/banner.svg" alt="totem" width="100%"/>
 </p>
 <p align="center">
-  <strong style="font-size: 2.5em;">totem</strong>
+  <strong style="font-size: 4em;">totem</strong>
 </p>
 <p align="center">
   <em>Totem stands watch over what a tribe has learned. It does the same for your codebase.</em>
