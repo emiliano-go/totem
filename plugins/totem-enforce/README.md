@@ -16,9 +16,9 @@ This installs:
 
 The plugin enforces a memory-first workflow with three gates:
 
-1. **Memory gate** — intercepts `read`, `grep`, `glob`, and `bash` tool calls (including bash sub-commands like `grep`, `find`, `cat`, `sed`, etc.). When totem has memory related to what you're accessing, the call is blocked and the agent is redirected to search memory first. The retry after checking memory is allowed.
-2. **Read commit-gate** — after a successful file read, all non-totem tools are blocked until the agent calls `register_file_read_tool` with what it learned.
-3. **Write commit-gate** — after `edit`/`write`, all non-totem tools are blocked until the agent calls `register_file_write_tool` documenting the change.
+1. **Memory gate**: intercepts `read`, `grep`, `glob`, and `bash` tool calls (including bash sub-commands like `grep`, `find`, `cat`, `sed`, etc.). When totem has memory related to what you're accessing, the call is blocked and the agent is redirected to search memory first. The retry after checking memory is allowed.
+2. **Read commit-gate**: after a successful file read, all non-totem tools are blocked until the agent calls `register_file_read_tool` with what it learned.
+3. **Write commit-gate**: after `edit`/`write`, all non-totem tools are blocked until the agent calls `register_file_write_tool` documenting the change.
 
 ```
 # Without totem: agent reads file directly
@@ -32,7 +32,7 @@ read /path/to/file.py
   → agent must call register_file_read_tool before doing anything else
 ```
 
-No stub memories are auto-created — the agent itself is responsible for
+No stub memories are auto-created; the agent itself is responsible for
 recording what it learned, which keeps memory quality high.
 
 ## Supported agents
@@ -41,13 +41,13 @@ recording what it learned, which keeps memory quality high.
 |-------|-----------|-----------------|
 | OpenCode | `tool.execute.before` JS plugin | Yes (`npx totem`) |
 | Claude Code | `PreToolUse`/`PostToolUse` hooks (`~/.claude/settings.json`) | Yes (`npx totem`) |
-| Kimi Code | plugin hooks (`kimi.plugin.json`) | Yes (`npx totem`) |
+| Kimi Code | `[[hooks]]` in `~/.kimi-code/config.toml` | Yes (`npx totem`) |
 
 Known limitations:
 
 - OpenCode does not pass MCP tool arguments to `tool.execute.before`, so the commit-gates clear on any `totem_register_file_read/write_tool` call regardless of its path argument.
 - OpenCode `tool.execute.before` does not fire inside task-spawned subagents.
-- Kimi Code plugin hooks do not fire in `kimi -p` print mode (use config.toml `[[hooks]]` there — see `kimi-hooks.toml`).
+- Kimi Code does not load `~/.kimi-code/plugins/*/plugin.json`: a plugin-manifest install fails open (hooks never run, nothing is logged). Hooks must be declared as `[[hooks]]` entries in `~/.kimi-code/config.toml` (see `kimi-hooks.toml`).
 
 ## Setup
 
@@ -85,6 +85,10 @@ claude mcp add totem -- uvx totem-mcp
 ```bash
 npx @emiliano-go/totem
 ```
+
+Or manually: copy `hooks/totem-hook.py` to `~/.kimi-code/hooks/` and append the
+`[[hooks]]` blocks from `kimi-hooks.toml` to `~/.kimi-code/config.toml`, then
+restart the session (or run `/reload`). Hooks load at session start.
 
 ## Requirements
 
