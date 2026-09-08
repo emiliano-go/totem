@@ -1,8 +1,8 @@
 <p align="center">
   <img src="assets/banner.svg" alt="totem" width="100%"/>
 </p>
-<p align="center">
-  <strong style="font-size: 4em;">totem</strong>
+<p align="center" style="font-size:10em;">
+  <h1 align="center">totem</h1>
 </p>
 <p align="center">
   <em>Totem stands watch over what a tribe has learned. It does the same for your codebase.</em>
