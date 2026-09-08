@@ -30,7 +30,7 @@ These are not suggestions. Follow them on every task.
 2. Run `engineering_context_tool(tags=[...], current_task="...")` with tags relevant to the task at hand
 3. If any `task:` tagged memories exist, read them with `memory_get_tool` to resume prior work
 
-### During work — totem first, then codebase
+### During work: totem first, then codebase
 
 **Before searching or reading code:**
 
@@ -48,7 +48,7 @@ These are not suggestions. Follow them on every task.
 12. **Hit an error?** Store it as a gotcha with the `cmd:` tag prefix so the next agent doesn't repeat it
 13. **Existing memory is wrong or incomplete?** Update it with `memory_update_tool(id="...", reason="...")`
 
-### After reading code — store what you learned
+### After reading code: store what you learned
 
 14. **After reading a file?** Store key facts with `register_file_read_tool` (auto-hashes, updates existing):
     ```
@@ -59,13 +59,13 @@ These are not suggestions. Follow them on every task.
     ```
     The commit-gate hook will block all other tools until you store what you learned.
 
-### After writing code — store what you changed
+### After writing code: store what you changed
 
 15. **After editing/writing a file?** Register the change with `register_file_write_tool` (auto-hashes, updates existing):
     ```
     register_file_write_tool(
       path="src/auth.py",
-      statement="Added input validation to getUser() — rejects null user_id",
+      statement="Added input validation to getUser(); rejects null user_id",
       reason="Bug: getUser() crashed on null input",
       tags=["auth", "bugfix"])
     ```
@@ -87,7 +87,7 @@ These are not suggestions. Follow them on every task.
 
 ## Subagents
 
-Subagents have **full totem access** — read and write. The same enforcement hooks apply:
+Subagents have **full totem access** (read and write). The same enforcement hooks apply:
 
 - Subagent tries to read a file with existing memory → **blocked**, redirected to `engineering_context_tool`
 - Subagent reads a file → **commit-gate** blocks until `register_file_read` called
@@ -100,13 +100,13 @@ Subagents should:
 3. Call `register_file_write` after editing/writing any file
 4. Return findings as text in their response (parent can store them)
 
-Duplicate prevention: `register_file_read` and `register_file_write` update-or-create based on file path — if parent and subagent both read the same file, the second call updates the existing memory instead of creating a duplicate.
+Duplicate prevention: `register_file_read` and `register_file_write` update-or-create based on file path: if parent and subagent both read the same file, the second call updates the existing memory instead of creating a duplicate.
 
 ## Anti-patterns
 
 ### Do not store task progress as decisions
-❌ `type="decision", title="Phase A complete"` — this is progress, not a decision
-✅ `type="decision", title="13 types over 4", metadata={"rationale": "..."}` — this explains WHY
+❌ `type="decision", title="Phase A complete"`: this is progress, not a decision
+✅ `type="decision", title="13 types over 4", metadata={"rationale": "..."}`: this explains WHY
 
 ### Do not store without the "future agent" test
 Before every `memory_create`, ask: "Would this help another agent in a future session?"
@@ -114,7 +114,7 @@ If no, don't store it.
 
 ### Do not store trivial operations
 ❌ `type="gotcha", title="Ran pytest, tests passed"`
-✅ `type="gotcha", title="FTS5 drops unicode chars"` — non-obvious behavior
+✅ `type="gotcha", title="FTS5 drops unicode chars"`: non-obvious behavior
 
 ### Do not re-read files that are already in memory
 If `implementation_create` exists for a file, use the stored summary instead of reading the file again.
