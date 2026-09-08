@@ -402,6 +402,9 @@ def register_file_read(
 
     if title is None:
         title = f"File: {file_path.name}"
+        title_provided = False
+    else:
+        title_provided = True
 
     tags = _normalize_tags(tags)
 
@@ -410,8 +413,11 @@ def register_file_read(
         update_fields = {
             "statement": statement,
             "evidence": json.dumps([evidence.model_dump(by_alias=True)]),
+            "tags": json.dumps(tags),
             "updated_at": _now(),
         }
+        if title_provided:
+            update_fields["title"] = title
         if details is not None:
             update_fields["details"] = details
         # Update metadata
@@ -420,9 +426,9 @@ def register_file_read(
         meta["kind"] = kind
         meta["path"] = path
         if start_line is not None:
-            meta["startLine"] = start_line
+            meta["startLine"] = actual_start
         if end_line is not None:
-            meta["endLine"] = end_line
+            meta["endLine"] = actual_end
         meta["contentHash"] = content_hash
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
@@ -446,8 +452,8 @@ def register_file_read(
                 "subject": subject,
                 "kind": kind,
                 "path": path,
-                **({"startLine": start_line} if start_line is not None else {}),
-                **({"endLine": end_line} if end_line is not None else {}),
+                **({"startLine": actual_start} if start_line is not None else {}),
+                **({"endLine": actual_end} if end_line is not None else {}),
                 "contentHash": content_hash,
             },
         )
@@ -514,6 +520,9 @@ def register_file_write(
 
     if title is None:
         title = f"File: {file_path.name}"
+        title_provided = False
+    else:
+        title_provided = True
 
     tags = _normalize_tags(tags)
 
@@ -522,8 +531,11 @@ def register_file_write(
         update_fields = {
             "statement": statement,
             "evidence": json.dumps([evidence.model_dump(by_alias=True)]),
+            "tags": json.dumps(tags),
             "updated_at": _now(),
         }
+        if title_provided:
+            update_fields["title"] = title
         if details is not None:
             update_fields["details"] = details
         meta = existing.metadata or {}
@@ -534,9 +546,9 @@ def register_file_write(
         meta["reason"] = reason
         meta["contentHash"] = content_hash
         if start_line is not None:
-            meta["startLine"] = start_line
+            meta["startLine"] = actual_start
         if end_line is not None:
-            meta["endLine"] = end_line
+            meta["endLine"] = actual_end
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
         insert_history(conn, existing.id, "updated", reason=f"register_file_write: {reason}")
@@ -563,8 +575,8 @@ def register_file_write(
                 "changeType": "write",
                 "reason": reason,
                 "contentHash": content_hash,
-                **({"startLine": start_line} if start_line is not None else {}),
-                **({"endLine": end_line} if end_line is not None else {}),
+                **({"startLine": actual_start} if start_line is not None else {}),
+                **({"endLine": actual_end} if end_line is not None else {}),
             },
         )
         insert_item(conn, item)

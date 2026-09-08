@@ -49,8 +49,8 @@ The `npx` command auto-installs the Python MCP server and configures enforcement
 | Agent | Hook type | Auto-configured? |
 |-------|-----------|-----------------|
 | OpenCode | `tool.execute.before` JS plugin | Yes |
-| Claude Code | `PreToolUse` hooks (`.claude/settings.json`) | Yes |
-| Kimi Code | `PreToolUse` hooks (`~/.kimi-code/config.toml`) | Yes |
+| Claude Code | `PreToolUse`/`PostToolUse` hooks (`~/.claude/settings.json`) | Yes |
+| Kimi Code | plugin hooks (`kimi.plugin.json`) | Yes |
 
 ## Features
 
@@ -94,7 +94,7 @@ Add to `~/.config/opencode/opencode.json`:
   "mcp": {
     "totem": {
       "type": "local",
-      "command": ["uvx", "totem-mcp"],
+      "command": ["totem-mcp"],
       "enabled": true
     }
   }
@@ -104,7 +104,7 @@ Add to `~/.config/opencode/opencode.json`:
 ### Claude Code
 
 ```bash
-claude mcp add totem -- uvx totem-mcp
+claude mcp add totem -- totem-mcp
 ```
 
 ### Kimi Code
@@ -285,7 +285,10 @@ The [`skills/precision-first/`](skills/precision-first/SKILL.md) directory conta
 # Run JS tests
 cd plugins/totem-enforce && node test-tokenize.js
 
-# Run Python tests
+# Run Python package tests
+uv run pytest
+
+# Run Python hook tests
 cd plugins/totem-enforce && python3 test-enforce.py
 ```
 

@@ -2,31 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/totem-enforce.py",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/totem-enforce.py",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/totem-enforce.py",
+            "command": "python3 ~/.claude/hooks/totem-hook.py pre",
             "timeout": 10
           }
         ]
@@ -34,12 +14,12 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Read",
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/totem-store-read.py",
-            "timeout": 15
+            "command": "python3 ~/.claude/hooks/totem-hook.py post",
+            "timeout": 10
           }
         ]
       }
@@ -49,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/totem-clear-state.py",
+            "command": "python3 ~/.claude/hooks/totem-hook.py clear",
             "timeout": 5
           }
         ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
 from contextlib import contextmanager
@@ -125,10 +126,13 @@ def db_connection(project: str | None = None):
     db_is_new = not totem_db.exists()
 
     conn = connect(project=project)
-    init_db(conn)
-
-    if db_is_new:
-        init_project(project_dir)
+    try:
+        init_db(conn)
+        if db_is_new:
+            init_project(project_dir)
+    except Exception:
+        conn.close()
+        raise
 
     try:
         yield conn
@@ -192,6 +196,11 @@ COLUMNS = [
     "schema_version", "verified_commit", "scope",
 ]
 COL_IDX = {name: i for i, name in enumerate(COLUMNS)}
+# Explicit column list for SELECTs. NEVER use SELECT * on memory_items:
+# fresh CREATE_TABLE puts `scope` mid-table while migrated DBs have it
+# appended at the end, so positional reads with SELECT * misalign.
+ITEM_COLS = ", ".join(COLUMNS)
+ITEM_COLS_M = ", ".join(f"m.{c}" for c in COLUMNS)
 
 
 def _row_to_item(row: tuple) -> MemoryItem:
@@ -278,19 +287,9 @@ def insert_history(
     conn.commit()
 
 
-def expand_tags(tags: list[str]) -> list[str]:
-    """Expand tags to include hierarchical children. auth → [auth, auth.*, auth.*.*]."""
-    expanded = set()
-    for tag in tags:
-        expanded.add(tag)
-        # Add wildcard pattern for children
-        expanded.add(f"{tag}.%")
-    return list(expanded)
-
-
 def get_item(conn: turso.Connection, item_id: str) -> MemoryItem | None:
     row = conn.execute(
-        "SELECT * FROM memory_items WHERE id = ? AND status != 'deleted'",
+        f"SELECT {ITEM_COLS} FROM memory_items WHERE id = ? AND status != 'deleted'",
         (item_id,),
     ).fetchone()
     if row is None:
@@ -342,7 +341,7 @@ def list_items(
 ) -> list[MemoryItem]:
     if sort not in ("created_at", "updated_at", "importance"):
         sort = "updated_at"
-    query = "SELECT * FROM memory_items WHERE status != 'deleted'"
+    query = f"SELECT {ITEM_COLS} FROM memory_items WHERE status != 'deleted'"
     params: list[Any] = []
     if type_:
         query += " AND type = ?"
@@ -370,6 +369,21 @@ def list_items(
     return [_row_to_item(row) for row in rows]
 
 
+_FTS_TOKEN_RE = re.compile(r"[\w.-]+")
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Strip FTS5 operator characters (: " ( ) * etc.) so user input can't break fts_match.
+    Sane multi-word queries pass through unchanged (words joined by spaces)."""
+    return " ".join(_FTS_TOKEN_RE.findall(query))
+
+
+def _escape_fts_query(query: str) -> str:
+    """Fully escaped form: every token becomes a quoted phrase, ANDed together."""
+    tokens = _FTS_TOKEN_RE.findall(query)
+    return " AND ".join(f'"{t}"' for t in tokens)
+
+
 def search_fts(
     conn: turso.Connection,
     query: str,
@@ -378,8 +392,8 @@ def search_fts(
     include_stale: bool = False,
     limit: int = 20,
 ) -> list[MemoryItem]:
-    sql = """
-        SELECT m.*, fts_score(m.title, m.statement, m.details, m.tags) AS score
+    sql = f"""
+        SELECT {ITEM_COLS_M}, fts_score(m.title, m.statement, m.details, m.tags) AS score
         FROM memory_items m
         WHERE fts_match(m.title, m.statement, m.details, m.tags, ?)
           AND m.status != 'deleted'
@@ -397,7 +411,16 @@ def search_fts(
         params.extend(tags)
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
-    rows = conn.execute(sql, params).fetchall()
+    sanitized = _sanitize_fts_query(query)
+    if not sanitized:
+        return []
+    try:
+        rows = conn.execute(sql, [sanitized] + params[1:]).fetchall()
+    except Exception:
+        escaped = _escape_fts_query(query)
+        if not escaped or escaped == sanitized:
+            raise
+        rows = conn.execute(sql, [escaped] + params[1:]).fetchall()
     return [_row_to_item(row) for row in rows]
 
 
@@ -410,7 +433,7 @@ def get_overlapping_items(
 ) -> list[MemoryItem]:
     """Find active items of the same type with overlapping evidence ranges."""
     rows = conn.execute(
-        """SELECT * FROM memory_items
+        f"""SELECT {ITEM_COLS} FROM memory_items
            WHERE type = ? AND status = 'active' AND id != ''
            ORDER BY updated_at DESC""",
         (type_,),
@@ -430,6 +453,9 @@ CONFLICT_COLUMNS = [
     "resolution_options", "recommended", "created_at",
 ]
 CONFLICT_COL_IDX = {name: i for i, name in enumerate(CONFLICT_COLUMNS)}
+# Explicit column list, safe prefix even on migrated DBs (resolved_at/resolution
+# are appended at the end). NEVER use SELECT * on conflicts.
+CONFLICT_COLS = ", ".join(CONFLICT_COLUMNS)
 
 
 def insert_conflict(conn: turso.Connection, conflict: Conflict) -> None:
@@ -459,7 +485,7 @@ def insert_conflict(conn: turso.Connection, conflict: Conflict) -> None:
 def get_conflicts_for_item(conn: turso.Connection, item_id: str) -> list[Conflict]:
     """Retrieve all conflicts involving a given item."""
     rows = conn.execute(
-        "SELECT * FROM conflicts WHERE item_a = ? OR item_b = ?",
+        f"SELECT {CONFLICT_COLS} FROM conflicts WHERE item_a = ? OR item_b = ?",
         (item_id, item_id),
     ).fetchall()
     return [
@@ -478,7 +504,7 @@ def get_conflicts_for_item(conn: turso.Connection, item_id: str) -> list[Conflic
 
 def get_all_conflicts(conn: turso.Connection) -> list[Conflict]:
     """Retrieve all stored conflicts."""
-    rows = conn.execute("SELECT * FROM conflicts").fetchall()
+    rows = conn.execute(f"SELECT {CONFLICT_COLS} FROM conflicts").fetchall()
     return [
         Conflict(
             itemA=row[CONFLICT_COL_IDX["item_a"]],
@@ -515,30 +541,37 @@ def resolve_conflict(
 def get_all_items(conn: turso.Connection) -> list[MemoryItem]:
     """Return all non-deleted memory items."""
     rows = conn.execute(
-        "SELECT * FROM memory_items WHERE status != 'deleted'"
+        f"SELECT {ITEM_COLS} FROM memory_items WHERE status != 'deleted'"
     ).fetchall()
     return [_row_to_item(row) for row in rows]
 
 
 def import_items(conn: turso.Connection, items: list[dict]) -> dict:
-    """Import memory items, skipping duplicates by ID."""
+    """Import memory items, skipping duplicates by ID (including soft-deleted rows).
+    One bad item never aborts the import; it is counted as skipped."""
     imported = 0
     skipped = 0
     for item_dict in items:
-        existing = get_item(conn, item_dict["id"])
-        if existing is not None:
+        try:
+            row = conn.execute(
+                "SELECT id FROM memory_items WHERE id = ?",
+                (item_dict["id"],),
+            ).fetchone()
+            if row is not None:
+                skipped += 1
+                continue
+            item = MemoryItem.model_validate(item_dict)
+            insert_item(conn, item)
+            imported += 1
+        except Exception:
             skipped += 1
-            continue
-        item = MemoryItem.model_validate(item_dict)
-        insert_item(conn, item)
-        imported += 1
     return {"imported": imported, "skipped": skipped}
 
 
 def find_by_title(conn: turso.Connection, title: str) -> MemoryItem | None:
     """Find an active memory item by exact title match."""
     row = conn.execute(
-        "SELECT * FROM memory_items WHERE title = ? AND status != 'deleted' LIMIT 1",
+        f"SELECT {ITEM_COLS} FROM memory_items WHERE title = ? AND status != 'deleted' LIMIT 1",
         (title,),
     ).fetchone()
     if row is None:
@@ -551,7 +584,7 @@ def find_same_title_different_statement(
 ) -> list[MemoryItem]:
     """Find active items with same title but different statement (conceptual contradiction)."""
     rows = conn.execute(
-        """SELECT * FROM memory_items
+        f"""SELECT {ITEM_COLS} FROM memory_items
            WHERE title = ? AND type = ? AND status = 'active'
            AND id != ? AND statement != ?""",
         (title, item_type, exclude_id, statement),
@@ -562,7 +595,7 @@ def find_same_title_different_statement(
 def list_task_items(conn: turso.Connection, limit: int = 10) -> list[MemoryItem]:
     """Find items with any tag starting with 'task:'."""
     rows = conn.execute(
-        """SELECT * FROM memory_items
+        f"""SELECT {ITEM_COLS} FROM memory_items
            WHERE status != 'deleted'
            AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value LIKE 'task:%')
            ORDER BY created_at DESC LIMIT ?""",
@@ -574,7 +607,7 @@ def list_task_items(conn: turso.Connection, limit: int = 10) -> list[MemoryItem]
 def list_command_items(conn: turso.Connection, limit: int = 20) -> list[MemoryItem]:
     """Find gotcha items with 'cmd:' tag prefix (command outcomes)."""
     rows = conn.execute(
-        """SELECT * FROM memory_items
+        f"""SELECT {ITEM_COLS} FROM memory_items
            WHERE status != 'deleted' AND type = 'gotcha'
            AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value LIKE 'cmd:%')
            ORDER BY created_at DESC LIMIT ?""",

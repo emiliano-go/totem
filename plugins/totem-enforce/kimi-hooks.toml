@@ -4,29 +4,17 @@
 
 [[hooks]]
 event = "PreToolUse"
-matcher = "Grep|Glob"
-command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
-timeout = 10
-
-[[hooks]]
-event = "PreToolUse"
-matcher = "Read"
-command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
-timeout = 10
-
-[[hooks]]
-event = "PreToolUse"
-matcher = "Bash"
-command = "python3 ~/.kimi-code/hooks/totem-enforce.py"
+matcher = ".*"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py pre"
 timeout = 10
 
 [[hooks]]
 event = "PostToolUse"
-matcher = "Read"
-command = "python3 ~/.kimi-code/hooks/totem-store-read.py"
-timeout = 15
+matcher = "Read|Edit|Write|MultiEdit|NotebookEdit"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py post"
+timeout = 10
 
 [[hooks]]
 event = "UserPromptSubmit"
-command = "python3 ~/.kimi-code/hooks/totem-clear-state.py"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py clear"
 timeout = 5

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import turso
 
-from .db import get_all_conflicts, list_items, connect, get_user_db_path
+from .db import get_all_conflicts, init_db, list_items, connect, get_user_db_path
 from .hashing import check_staleness
 from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
@@ -132,11 +132,17 @@ def engineering_context(
     user_items: list = []
     user_db_path = get_user_db_path()
     if user_db_path.exists():
-        user_conn = connect(user_db_path)
+        user_conn = None
         try:
+            user_conn = connect(user_db_path)
+            init_db(user_conn)  # idempotent; migrates old-schema user DBs
             user_items = list_items(user_conn, tags=tags, limit=200)
+        except Exception:
+            # A broken user DB must not take down project results
+            user_items = []
         finally:
-            user_conn.close()
+            if user_conn is not None:
+                user_conn.close()
 
     seen_ids: set[str] = set()
     all_items: list = []
@@ -240,6 +246,8 @@ def engineering_context(
 
     token_count = 0
     truncated = False
+    included_ids: set[str] = {a["id"] for a in blocking_ambiguities}
+    omitted_ids: list[str] = []
 
     for type_ in TYPE_ORDER:
         # Ambiguities are split: blocking already shown above, non-blocking go here
@@ -254,6 +262,7 @@ def engineering_context(
         section_tokens = _token_estimate(section_text)
         if effective_budget and token_count + section_tokens > effective_budget:
             truncated = True
+            omitted_ids.extend(item.id for item in items_of_type)
             sections.append(f"\n{label}: (truncated, budget exceeded)")
             continue
         sections.append(section_text)
@@ -264,9 +273,11 @@ def engineering_context(
             if effective_budget and token_count + item_tokens > effective_budget:
                 truncated = True
                 sections.append(f"  ... ({len(items_of_type) - items_of_type.index(item)} items truncated)")
+                omitted_ids.extend(it.id for it in items_of_type[items_of_type.index(item):])
                 break
             sections.append(item_text)
             token_count += item_tokens
+            included_ids.add(item.id)
 
     # STALE WARNINGS: always shown, never budget-truncated
     if stale_warnings:
@@ -276,10 +287,7 @@ def engineering_context(
 
     context = "\n".join(sections)
 
-    selected_ids = [item.id for _, item in scored]
-    omitted_ids = []
-    if truncated:
-        omitted_ids = [item.id for _, item in scored if item.id not in selected_ids]
+    selected_ids = [item.id for _, item in scored if item.id in included_ids]
 
     return {
         "context": context,

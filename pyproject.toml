@@ -1,6 +1,6 @@
 [project]
 name = "totem-mcp"
-version = "0.4.5"
+version = "0.5.0"
 description = "Persistent memory layer for engineering agents"
 readme = "README.md"
 license = "MIT"
@@ -30,3 +30,8 @@ build-backend = "uv_build"
 
 [tool.uv_build]
 package-data = {"totem_mcp" = ["agent_config/*"]}
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

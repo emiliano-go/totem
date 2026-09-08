@@ -2,8 +2,8 @@
   "mcpServers": {
     "totem": {
       "type": "stdio",
-      "command": "uvx",
-      "args": ["totem-mcp"]
+      "command": "totem-mcp",
+      "args": []
     }
   }
 }
