@@ -30,7 +30,7 @@ jobs:
       - name: Sync version from pyproject.toml
         run: |
           VERSION=$(grep '^version' ../../pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
         working-directory: plugins/totem-enforce
 
       - name: Publish to npm
