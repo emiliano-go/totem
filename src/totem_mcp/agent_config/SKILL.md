@@ -51,7 +51,7 @@ memory_create_tool(
 )
 ```
 
-**Made an assumption (§4 — distinguish fact/assumption/hypothesis/guarantee):**
+**Made an assumption (§4: distinguish fact/assumption/hypothesis/guarantee):**
 ```
 memory_create_tool(
   type="assumption",
@@ -66,7 +66,7 @@ memory_create_tool(
 )
 ```
 
-**Found an ambiguity (§5 — classify by impact, flag blocking ones):**
+**Found an ambiguity (§5: classify by impact, flag blocking ones):**
 ```
 memory_create_tool(
   type="ambiguity",
@@ -169,7 +169,7 @@ Adding evidence lets future agents jump directly to the relevant code instead of
 memory_create_tool(
   type="gotcha",
   title="outcome: parse_batch early exit",
-  statement="convert_batch() breaks on first failure. Exit code 2 = partial success. Partial output is valid — don't re-run from scratch.",
+  statement="convert_batch() breaks on first failure. Exit code 2 = partial success. Partial output is valid; don't re-run from scratch.",
   tags=["outcome:mdtool", "performance"],
   metadata={"impact": "O(n) → O(first_failure)"}
 )
@@ -197,10 +197,10 @@ Never present an assumption as a fact. Use calibrated language in `statement`.
 
 ### Ambiguities (§5)
 Require `question`, `interpretations`, and `impact` in metadata. Impact levels:
-- `low`: cosmetic, no implementation effect — proceed
-- `medium`: could affect naming or minor details — pick convention
-- `high`: could change API behavior, performance, or correctness — ask or state assumption
-- `critical`: risk of data loss, security, or irreversible damage — never guess
+- `low`: cosmetic, no implementation effect; proceed
+- `medium`: could affect naming or minor details; pick convention
+- `high`: could change API behavior, performance, or correctness; ask or state assumption
+- `critical`: risk of data loss, security, or irreversible damage; never guess
 
 Blocking ambiguities (`high|critical`) are surfaced in `engineering_context` output.
 
@@ -267,5 +267,5 @@ For new projects, run `totem_init_tool()` first. It creates `.totem/` and the DB
 - Add evidence (file paths + line ranges) for staleness detection
 - `current_task` on `engineering_context_tool` boosts scoring for memories relevant to what you're doing now
 - Store command outcomes with `cmd:` tag so the next agent knows what works
-- Classify assumptions explicitly — the difference between a fact and an assumption matters across sessions
-- Flag ambiguities early — blocking ambiguities (`impact: high|critical`) are surfaced in context output
+- Classify assumptions explicitly; the difference between a fact and an assumption matters across sessions
+- Flag ambiguities early: blocking ambiguities (`impact: high|critical`) are surfaced in context output
