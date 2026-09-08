@@ -31,23 +31,23 @@ function copyFile(src, dest) {
 
 if (!hasCommand("totem-mcp --version")) {
   console.log("[totem] totem-mcp not found. Installing...");
-  if (hasCommand("uvx --version")) {
-    try {
-      execSync("uvx totem-mcp --version", { stdio: "inherit", timeout: 60000 });
-    } catch {
-      console.error("[totem] Failed. Try: uvx totem-mcp");
-      process.exit(1);
-    }
-  } else if (hasCommand("pip --version") || hasCommand("pip3 --version")) {
+  if (hasCommand("pip --version") || hasCommand("pip3 --version")) {
     const pip = hasCommand("pip --version") ? "pip" : "pip3";
     try {
       execSync(`${pip} install totem-mcp`, { stdio: "inherit", timeout: 120000 });
     } catch {
-      console.error(`[totem] Failed. Try: ${pip} install totem-mcp`);
+      console.error(`[totem] ${pip} install failed. Try: pip install totem-mcp`);
+      process.exit(1);
+    }
+  } else if (hasCommand("uvx --version")) {
+    try {
+      execSync("uvx totem-mcp --version", { stdio: "inherit", timeout: 60000 });
+    } catch {
+      console.error("[totem] Failed. Try: uvx totem-mcp or pip install totem-mcp");
       process.exit(1);
     }
   } else {
-    console.error("[totem] No Python found. Install: uvx totem-mcp");
+    console.error("[totem] No Python found. Install: pip install totem-mcp");
     process.exit(1);
   }
 }
