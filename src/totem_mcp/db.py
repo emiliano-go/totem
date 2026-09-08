@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS memory_items (
 CREATE_FTS = """
 CREATE INDEX IF NOT EXISTS memory_items_fts ON memory_items USING fts (title, statement, details, tags);
 """
+# NOTE: This FTS index uses Turso/libSQL's FTS5 implementation. It is NOT compatible
+# with standard sqlite3's FTS5 — the internal schema entries (__turso_internal_fts_dir_*)
+# cause "malformed database schema" errors if accessed via `import sqlite3`. Use pyturso
+# exclusively for all database access.
 
 CREATE_CONFLICTS = """
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -111,14 +115,19 @@ def connect(db_path: Path | None = None, project: str | None = None) -> turso.Co
 @contextmanager
 def db_connection(project: str | None = None):
     """Context manager: connect, init schema, auto-init agent config on first use, auto-close."""
+    from pathlib import Path
+
+    project_dir = Path(project) if project else get_git_root()
+    if project_dir is None:
+        project_dir = Path.cwd()
+
+    totem_db = project_dir / ".totem" / "totem.db"
+    db_is_new = not totem_db.exists()
+
     conn = connect(project=project)
     init_db(conn)
 
-    # Auto-init agent config files on first use (if .totem/ is new)
-    from pathlib import Path
-    project_dir = Path(project) if project else get_git_root()
-    totem_db = project_dir / ".totem" / "totem.db"
-    if not totem_db.exists():
+    if db_is_new:
         init_project(project_dir)
 
     try:
@@ -127,7 +136,20 @@ def db_connection(project: str | None = None):
         conn.close()
 
 
+def _is_schema_current(conn: turso.Connection) -> bool:
+    """Check if the schema is already at the current version by probing for the scope column."""
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM pragma_table_info('memory_items') WHERE name = 'scope'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
 def init_db(conn: turso.Connection) -> None:
+    if _is_schema_current(conn):
+        return
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)

@@ -50,13 +50,26 @@ These are not suggestions. Follow them on every task.
 
 ### After reading code — store what you learned
 
-14. **After reading a file?** Store key facts as implementation memory:
+14. **After reading a file?** Store key facts with `register_file_read_tool` (auto-hashes, updates existing):
     ```
-    memory_create_tool(type="implementation", title="File: auth.py",
+    register_file_read_tool(
+      path="src/auth.py",
       statement="getUser() returns User | null, takes user_id: int",
-      tags=["implementation", "auth", "api"],
-      metadata={"subject": "getUser()", "kind": "api", "path": "src/auth.py"})
+      subject="getUser()", kind="api", tags=["auth", "api"])
     ```
+    The commit-gate hook will block all other tools until you store what you learned.
+
+### After writing code — store what you changed
+
+15. **After editing/writing a file?** Register the change with `register_file_write_tool` (auto-hashes, updates existing):
+    ```
+    register_file_write_tool(
+      path="src/auth.py",
+      statement="Added input validation to getUser() — rejects null user_id",
+      reason="Bug: getUser() crashed on null input",
+      tags=["auth", "bugfix"])
+    ```
+    The commit-gate hook will block all other tools until you register the write.
 15. **After understanding a module?** Store architecture:
     ```
     memory_create_tool(type="architecture", title="Auth module",
@@ -71,6 +84,23 @@ These are not suggestions. Follow them on every task.
 17. If you were working on a `task:` tagged item, update or delete it
 18. Store any command outcomes (worked/failed) with `cmd:` tag prefix
 19. **After completing a task**, store an architecture summary: what you built, key structural decisions, and any measurable outcomes. Use `architecture:<module>` or `outcome:<what>` tags.
+
+## Subagents
+
+Subagents have **full totem access** — read and write. The same enforcement hooks apply:
+
+- Subagent tries to read a file with existing memory → **blocked**, redirected to `engineering_context_tool`
+- Subagent reads a file → **commit-gate** blocks until `register_file_read` called
+- Subagent writes a file → **commit-gate** blocks until `register_file_write` called
+- Subagent can call all 31 totem MCP tools
+
+Subagents should:
+1. Call `engineering_context_tool(tags=[...], current_task="...")` at the start to get context
+2. Call `register_file_read` after reading any file
+3. Call `register_file_write` after editing/writing any file
+4. Return findings as text in their response (parent can store them)
+
+Duplicate prevention: `register_file_read` and `register_file_write` update-or-create based on file path — if parent and subagent both read the same file, the second call updates the existing memory instead of creating a duplicate.
 
 ## Anti-patterns
 
@@ -154,10 +184,13 @@ totem enforces its workflow via agent hooks (see `plugins/totem-enforce/`):
 - Before grep/glob: search memory first
 - Before read: check engineering_context first
 - Before bash: check memory_commands first
-- After read: store implementation info automatically
+- After read: commit-gate blocks all tools until you call `register_file_read_tool`
+- After edit/write: commit-gate blocks all tools until you call `register_file_write_tool`
 
 If memory is empty (first session), hooks allow everything.
 If memory has relevant items, hooks block and redirect to totem tools.
+If you read a file, hooks block until you store what you learned.
+If you write a file, hooks block until you register the change.
 
 ## Tools available
 
@@ -175,6 +208,8 @@ If memory has relevant items, hooks block and redirect to totem tools.
 - `engineering_context_tool` - Assemble full context for a task
 - `memory_export_tool` - Export all memories as JSON
 - `memory_import_tool` - Import memories from export
+- `register_file_read_tool` - Store facts learned from reading a file (auto-hashes, updates existing)
+- `register_file_write_tool` - Register file changes with reason (auto-hashes, updates existing)
 
 **Typed wrappers** (call `memory_create_tool` with pre-filled type):
 

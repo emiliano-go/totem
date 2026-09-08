@@ -1,5 +1,12 @@
-# totem
-
+<p align="center">
+  <img src="assets/banner.svg" alt="totem" width="100%"/>
+</p>
+<p align="center">
+  <strong style="font-size: 2.5em;">totem</strong>
+</p>
+<p align="center">
+  <em>Totem stands watch over what a tribe has learned. It does the same for your codebase.</em>
+</p>
 <p align="center">
   <a href="https://www.npmjs.com/package/@emiliano-go/totem">
     <img src="https://img.shields.io/npm/v/@emiliano-go/totem?logo=npm&logoColor=white&style=for-the-badge&cacheSeconds=0" alt="npm">
@@ -18,7 +25,9 @@
   </a>
 </p>
 
-Persistent memory layer for engineering agents. Store decisions, invariants, gotchas, and rejected ideas in a local database with staleness detection, conflict detection, full-text search, and structured context assembly.
+---
+
+A totem stands watch over what a tribe has learned. Totem does the same for a codebase. It's a Git-aware memory server for coding agents: decisions, invariants, and gotchas persist across sessions, backed by evidence, and flagged the moment the code underneath them changes.
 
 ## Why
 
@@ -46,27 +55,31 @@ The `npx` command auto-installs the Python MCP server and configures enforcement
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **29 MCP tools** (14 core + 15 typed wrappers)
+- **31 MCP tools** (16 core + 15 typed wrappers)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
 - **Hybrid memory** (project + user databases)
 - **Context assembly** with scored pipeline and token budget
 - **Agent enforcement** blocks reads/grep/bash when memory exists, forces search-first workflow
+- **Commit gates** block all tools until agent registers file reads and writes
 - **History audit** on every create, update, and delete
 
 ## How it works
 
 ```
 Agent reads file for the first time
-  → auto-stores implementation info → done
+  → commit-gate blocks → agent registers read → memory stored → done
 
 Agent reads file again (memory exists)
   → blocked → redirected to memory tools
   → searches memory → finds context → done
 
+Agent writes a file
+  → commit-gate blocks → agent registers write with reason → change documented → done
+
 Agent reads file but finds nothing in memory
-  → allowed to read with tool → done
+  → allowed to read → commit-gate requires registration → done
 ```
 
 ## Setup
@@ -172,7 +185,7 @@ totem import backup.json
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (29)
+## MCP tools (31)
 
 | Tool | Description |
 |------|-------------|
@@ -190,7 +203,9 @@ totem import backup.json
 | `engineering_context_tool` | Scored context assembly with task relevance |
 | `memory_export_tool` | Export all memories as JSON |
 | `memory_import_tool` | Import memories from JSON (skips duplicates) |
-| `*_create` (15) | Typed wrappers for each memory type |
+| `register_file_read_tool` | Store facts learned from reading a file (auto-hashes) |
+| `register_file_write_tool` | Register file changes with reason (auto-hashes) |
+| `*_create` (14) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
 ## CLI commands (14)
@@ -222,17 +237,17 @@ score = 0.30*tag_match + 0.20*task_similarity + 0.25*importance
 
 Invariants, constraints, and ambiguities get a 1.25x multiplier. Potentially stale items get a 0.5x penalty.
 
-**Output sections (never truncated):**
+**Output sections (BLOCKING AMBIGUITIES, CONFLICTS, and STALE WARNINGS are never budget-truncated):**
 
-1. TASK
+1. TASK (if provided)
 2. BLOCKING AMBIGUITIES
-3. CONFLICTS
+3. CONTEXT CONFLICTS
 4. CRITICAL CONSTRAINTS
 5. CRITICAL INVARIANTS
 6. RELEVANT CONTRACTS
 7. ARCHITECTURE
 8. DECISIONS
-9. KNOWN AMBIGUITIES
+9. KNOWN AMBIGUITIES (non-blocking)
 10. OBSERVATIONS
 11. GOTCHAS
 12. KNOWN BUGS
@@ -240,7 +255,7 @@ Invariants, constraints, and ambiguities get a 1.25x multiplier. Potentially sta
 14. CODEBASE FACTS
 15. OPEN QUESTIONS
 16. REJECTED IDEAS
-17. STALE WARNINGS
+17. STALE KNOWLEDGE WARNINGS
 
 ## Workspace scoping
 
@@ -257,6 +272,8 @@ totem auto-detects your project root via `git rev-parse --show-toplevel`. Overri
 
 - `task:<name>`: In-progress work. Query with `memory_tasks_tool`.
 - `cmd:<command>`: Command outcomes. Query with `memory_commands_tool`.
+- `architecture:<module>`: Structural facts about a module.
+- `outcome:<what>`: Measurable results (performance wins, bug fix impact, etc.).
 
 ## Companion skill
 

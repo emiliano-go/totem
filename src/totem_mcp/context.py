@@ -17,8 +17,8 @@ _BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGU
 
 
 def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> float:
-    """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.15*importance
-    + 0.10*confidence + 0.05*recency. Invariants/constraints: 1.25x. Stale: 0.5x."""
+    """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.25*importance
+    + 0.15*confidence + 0.10*recency. Invariants/constraints/ambiguities: 1.25x. Stale: 0.5x."""
     tag_match = len(set(item.tags) & set(tags)) / max(len(tags), 1)
     recency = 1.0
 

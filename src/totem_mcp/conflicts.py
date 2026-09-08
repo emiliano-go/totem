@@ -7,14 +7,6 @@ import turso
 from .db import get_overlapping_items, find_same_title_different_statement, insert_conflict
 from .models import Conflict, MemoryItem, MemoryType
 
-# Types that carry claims worth checking for contradictions
-CLAIM_TYPES = (
-    MemoryType.DECISION,
-    MemoryType.INVARIANT,
-    MemoryType.ASSUMPTION,
-    MemoryType.CONTRACT if hasattr(MemoryType, "CONSTRAINT") else MemoryType.ASSUMPTION,
-)
-
 
 def detect_conflicts(
     conn: turso.Connection,

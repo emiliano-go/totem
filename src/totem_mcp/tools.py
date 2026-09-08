@@ -171,6 +171,7 @@ def memory_update(
     reason: str | None = None,
     title: str | None = None,
     statement: str | None = None,
+    details: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
     confidence: float | None = None,
@@ -194,6 +195,9 @@ def memory_update(
     if statement is not None:
         changes.append(("statement", item.statement, statement))
         fields["statement"] = statement
+    if details is not None:
+        changes.append(("details", item.details, details))
+        fields["details"] = details
     if tags is not None:
         if not tags:
             raise ValueError("At least one tag is required")
@@ -222,6 +226,18 @@ def memory_update(
         fields["evidence"] = new_evidence
     if metadata is not None:
         old_meta = json.dumps(item.metadata) if item.metadata else None
+        # Bug state machine enforcement: validate transitions on update
+        if item.type == MemoryType.BUG and metadata.get("state"):
+            old_state = (item.metadata or {}).get("state")
+            new_state = metadata["state"]
+            if old_state and old_state != new_state:
+                from .models import _BUG_TRANSITIONS
+                allowed = _BUG_TRANSITIONS.get(old_state, set())
+                if new_state not in allowed:
+                    raise ValueError(
+                        f"Bug state transition '{old_state}' → '{new_state}' not allowed. "
+                        f"Valid transitions: {old_state} → {', '.join(sorted(allowed)) or '(none)'}"
+                    )
         changes.append(("metadata", old_meta, json.dumps(metadata)))
         fields["metadata"] = json.dumps(metadata)
 
@@ -330,3 +346,233 @@ def totem_init(project: str | None = None) -> dict:
     db_path = get_db_path(project)
     project_dir = db_path.parent.parent
     return init_project(project_dir)
+
+
+def register_file_read(
+    conn: turso.Connection,
+    path: str,
+    statement: str,
+    subject: str,
+    kind: str,
+    tags: list[str],
+    start_line: int | None = None,
+    end_line: int | None = None,
+    title: str | None = None,
+    details: str | None = None,
+) -> dict:
+    """Register facts learned from reading a file. Updates existing memory for same path, or creates new."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        return {"error": f"File not found: {path}"}
+
+    # Read file and compute hash
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except (PermissionError, UnicodeDecodeError) as e:
+        return {"error": f"Cannot read {path}: {e}"}
+
+    lines = content.splitlines(keepends=True)
+    actual_start = start_line if start_line and start_line >= 1 else 1
+    actual_end = end_line if end_line and end_line <= len(lines) else len(lines)
+    if actual_start > actual_end:
+        return {"error": f"Invalid line range: {start_line}-{end_line}"}
+
+    range_content = "".join(lines[actual_start - 1 : actual_end])
+    content_hash = hash_content(range_content)
+
+    # Search for existing implementation memory with same path
+    existing = None
+    all_items = get_all_items(conn)
+    for item in all_items:
+        if item.type != MemoryType.IMPLEMENTATION:
+            continue
+        meta = item.metadata or {}
+        if meta.get("path") == path:
+            existing = item
+            break
+
+    evidence = Evidence(
+        path=path,
+        startLine=actual_start,
+        endLine=actual_end,
+        contentHash=content_hash,
+        kind="source",
+        capturedAt=_now(),
+    )
+
+    if title is None:
+        title = f"File: {file_path.name}"
+
+    tags = _normalize_tags(tags)
+
+    if existing:
+        # Update existing: refresh statement, evidence, hash
+        update_fields = {
+            "statement": statement,
+            "evidence": json.dumps([evidence.model_dump(by_alias=True)]),
+            "updated_at": _now(),
+        }
+        if details is not None:
+            update_fields["details"] = details
+        # Update metadata
+        meta = existing.metadata or {}
+        meta["subject"] = subject
+        meta["kind"] = kind
+        meta["path"] = path
+        if start_line is not None:
+            meta["startLine"] = start_line
+        if end_line is not None:
+            meta["endLine"] = end_line
+        meta["contentHash"] = content_hash
+        update_fields["metadata"] = json.dumps(meta)
+        update_item_row(conn, existing.id, update_fields)
+        insert_history(conn, existing.id, "updated", reason="register_file_read")
+        return {
+            "id": existing.id,
+            "action": "updated",
+            "statement": statement,
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+        }
+    else:
+        # Create new
+        item = MemoryItem(
+            type=MemoryType.IMPLEMENTATION,
+            title=title,
+            statement=statement,
+            details=details,
+            tags=tags,
+            evidence=[evidence],
+            metadata={
+                "subject": subject,
+                "kind": kind,
+                "path": path,
+                **({"startLine": start_line} if start_line is not None else {}),
+                **({"endLine": end_line} if end_line is not None else {}),
+                "contentHash": content_hash,
+            },
+        )
+        insert_item(conn, item)
+        insert_history(conn, item.id, "created", reason="register_file_read")
+        return {
+            "id": item.id,
+            "action": "created",
+            "statement": statement,
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+        }
+
+
+def register_file_write(
+    conn: turso.Connection,
+    path: str,
+    statement: str,
+    reason: str,
+    tags: list[str],
+    start_line: int | None = None,
+    end_line: int | None = None,
+    title: str | None = None,
+    details: str | None = None,
+) -> dict:
+    """Register a file write/modification. Updates existing memory for same path, or creates new."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        return {"error": f"File not found: {path}"}
+
+    # Read file and compute hash
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except (PermissionError, UnicodeDecodeError) as e:
+        return {"error": f"Cannot read {path}: {e}"}
+
+    lines = content.splitlines(keepends=True)
+    actual_start = start_line if start_line and start_line >= 1 else 1
+    actual_end = end_line if end_line and end_line <= len(lines) else len(lines)
+    if actual_start > actual_end:
+        return {"error": f"Invalid line range: {start_line}-{end_line}"}
+
+    range_content = "".join(lines[actual_start - 1 : actual_end])
+    content_hash = hash_content(range_content)
+
+    # Search for existing implementation memory with same path
+    existing = None
+    all_items = get_all_items(conn)
+    for item in all_items:
+        if item.type != MemoryType.IMPLEMENTATION:
+            continue
+        meta = item.metadata or {}
+        if meta.get("path") == path:
+            existing = item
+            break
+
+    evidence = Evidence(
+        path=path,
+        startLine=actual_start,
+        endLine=actual_end,
+        contentHash=content_hash,
+        kind="source",
+        capturedAt=_now(),
+    )
+
+    if title is None:
+        title = f"File: {file_path.name}"
+
+    tags = _normalize_tags(tags)
+
+    if existing:
+        # Update existing: refresh statement, evidence, hash, append change record
+        update_fields = {
+            "statement": statement,
+            "evidence": json.dumps([evidence.model_dump(by_alias=True)]),
+            "updated_at": _now(),
+        }
+        if details is not None:
+            update_fields["details"] = details
+        meta = existing.metadata or {}
+        meta["subject"] = path
+        meta["kind"] = "module"
+        meta["path"] = path
+        meta["changeType"] = "write"
+        meta["reason"] = reason
+        meta["contentHash"] = content_hash
+        if start_line is not None:
+            meta["startLine"] = start_line
+        if end_line is not None:
+            meta["endLine"] = end_line
+        update_fields["metadata"] = json.dumps(meta)
+        update_item_row(conn, existing.id, update_fields)
+        insert_history(conn, existing.id, "updated", reason=f"register_file_write: {reason}")
+        return {
+            "id": existing.id,
+            "action": "updated",
+            "statement": statement,
+            "reason": reason,
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+        }
+    else:
+        # Create new
+        item = MemoryItem(
+            type=MemoryType.IMPLEMENTATION,
+            title=title,
+            statement=statement,
+            details=details,
+            tags=tags,
+            evidence=[evidence],
+            metadata={
+                "subject": path,
+                "kind": "module",
+                "path": path,
+                "changeType": "write",
+                "reason": reason,
+                "contentHash": content_hash,
+                **({"startLine": start_line} if start_line is not None else {}),
+                **({"endLine": end_line} if end_line is not None else {}),
+            },
+        )
+        insert_item(conn, item)
+        insert_history(conn, item.id, "created", reason=f"register_file_write: {reason}")
+        return {
+            "id": item.id,
+            "action": "created",
+            "statement": statement,
+            "reason": reason,
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+        }

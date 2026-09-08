@@ -57,8 +57,8 @@ console.log(`[totem] ${version}`);
 
 // ── 2. Configure OpenCode ─────────────────────────────────────────
 
-const opencodeDir = path.join(process.cwd(), ".opencode", "plugins");
-if (fs.existsSync(path.join(process.cwd(), ".opencode")) || hasCommand("opencode --version")) {
+const opencodeDir = path.join(os.homedir(), ".config", "opencode", "plugins");
+if (hasCommand("opencode --version")) {
   console.log("[totem] Configuring OpenCode...");
   mkdirp(opencodeDir);
   copyFile(

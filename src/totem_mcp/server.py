@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .context import engineering_context
 from .db import db_connection
+from .db import list_task_items, list_command_items
 from .tools import (
     memory_create,
     memory_delete,
@@ -19,6 +20,8 @@ from .tools import (
     memory_recent,
     memory_search,
     memory_update,
+    register_file_read,
+    register_file_write,
     resolve_conflict,
     totem_init,
 )
@@ -33,8 +36,11 @@ def totem_init_tool(project: str | None = None) -> str:
     Args:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
-    result = totem_init(project=project)
-    return json.dumps(result, indent=2)
+    try:
+        result = totem_init(project=project)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
@@ -54,7 +60,7 @@ def memory_create_tool(
     """Create a new memory item.
 
     Args:
-        type: One of: decision, invariant, gotcha, rejected_idea
+        type: One of: decision, invariant, gotcha, rejected_idea, assumption, open_question, ambiguity, contract, constraint, hypothesis, observation, bug, architecture, implementation
         title: Short title for the memory
         statement: The factual claim being stored
         tags: At least one tag for categorization
@@ -82,7 +88,7 @@ def memory_create_tool(
                 metadata=metadata,
             )
             return json.dumps(result, indent=2)
-        except ValueError as e:
+        except Exception as e:
             return f"Error: {e}"
 
 
@@ -95,11 +101,14 @@ def memory_get_tool(id: str, include_evidence: bool = True, project: str | None 
         include_evidence: Whether to check evidence staleness (default True)
         project: Optional project root path. Auto-detected from git root if omitted.
     """
-    with db_connection(project=project) as conn:
-        result = memory_get(conn, id, include_evidence=include_evidence)
-        if result is None:
-            return f"Error: Item {id} not found"
-        return json.dumps(result, indent=2)
+    try:
+        with db_connection(project=project) as conn:
+            result = memory_get(conn, id, include_evidence=include_evidence)
+            if result is None:
+                return f"Error: Item {id} not found"
+            return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
@@ -108,6 +117,7 @@ def memory_update_tool(
     reason: str | None = None,
     title: str | None = None,
     statement: str | None = None,
+    details: str | None = None,
     tags: list[str] | None = None,
     status: str | None = None,
     confidence: float | None = None,
@@ -123,6 +133,7 @@ def memory_update_tool(
         reason: Why this update was made (strongly recommended for audit trail; defaults to 'maintenance')
         title: New title
         statement: New statement
+        details: New details
         tags: New tags
         status: New status (active, potentially_stale, invalidated, resolved, superseded)
         confidence: New confidence (0-1)
@@ -139,6 +150,7 @@ def memory_update_tool(
                 reason=reason,
                 title=title,
                 statement=statement,
+                details=details,
                 tags=tags,
                 status=status,
                 confidence=confidence,
@@ -149,7 +161,7 @@ def memory_update_tool(
             if result is None:
                 return f"Error: Item {id} not found"
             return json.dumps(result, indent=2)
-        except ValueError as e:
+        except Exception as e:
             return f"Error: {e}"
 
 
@@ -166,7 +178,7 @@ def memory_delete_tool(id: str, reason: str, project: str | None = None) -> str:
         try:
             result = memory_delete(conn, id, reason)
             return json.dumps(result, indent=2)
-        except ValueError as e:
+        except Exception as e:
             return f"Error: {e}"
 
 
@@ -190,8 +202,11 @@ def memory_list_tool(
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = memory_list(conn, type=type, tags=tags, status=status, sort=sort or "updated_at", limit=limit)
-        return json.dumps(result, indent=2)
+        try:
+            result = memory_list(conn, type=type, tags=tags, status=status, sort=sort or "updated_at", limit=limit)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -203,8 +218,11 @@ def memory_recent_tool(limit: int = 5, project: str | None = None) -> str:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = memory_recent(conn, limit=limit)
-        return json.dumps(result, indent=2)
+        try:
+            result = memory_recent(conn, limit=limit)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -216,8 +234,11 @@ def memory_tasks_tool(limit: int = 10, project: str | None = None) -> str:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        items = list_task_items(conn, limit=limit)
-        return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+        try:
+            items = list_task_items(conn, limit=limit)
+            return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -229,8 +250,11 @@ def memory_commands_tool(limit: int = 20, project: str | None = None) -> str:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        items = list_command_items(conn, limit=limit)
-        return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+        try:
+            items = list_command_items(conn, limit=limit)
+            return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -243,10 +267,13 @@ def resolve_conflict_tool(conflict_id: str, resolution: str, project: str | None
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = resolve_conflict(conn, conflict_id, resolution)
-        if result is None:
-            return f"Error: Conflict {conflict_id} not found"
-        return json.dumps(result, indent=2)
+        try:
+            result = resolve_conflict(conn, conflict_id, resolution)
+            if result is None:
+                return f"Error: Conflict {conflict_id} not found"
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -269,15 +296,18 @@ def memory_search_tool(
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = memory_search(
-            conn,
-            query=query,
-            types=types,
-            tags=tags,
-            include_stale=include_stale,
-            limit=limit,
-        )
-        return json.dumps(result, indent=2)
+        try:
+            result = memory_search(
+                conn,
+                query=query,
+                types=types,
+                tags=tags,
+                include_stale=include_stale,
+                limit=limit,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -307,17 +337,20 @@ def engineering_context_tool(
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = engineering_context(
-            conn,
-            tags=tags,
-            task=task,
-            token_budget=token_budget,
-            types=types,
-            include_stale=include_stale,
-            current_task=current_task,
-            paths=paths,
-        )
-        return json.dumps(result, indent=2)
+        try:
+            result = engineering_context(
+                conn,
+                tags=tags,
+                task=task,
+                token_budget=token_budget,
+                types=types,
+                include_stale=include_stale,
+                current_task=current_task,
+                paths=paths,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -328,8 +361,11 @@ def memory_export_tool(project: str | None = None) -> str:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = memory_export(conn)
-        return json.dumps(result, indent=2)
+        try:
+            result = memory_export(conn)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 @mcp.tool()
@@ -341,8 +377,106 @@ def memory_import_tool(data: dict[str, Any], project: str | None = None) -> str:
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
-        result = memory_import(conn, data)
-        return json.dumps(result, indent=2)
+        try:
+            result = memory_import(conn, data)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+@mcp.tool()
+def register_file_read_tool(
+    path: str,
+    statement: str,
+    subject: str,
+    kind: str,
+    tags: list[str],
+    start_line: int | None = None,
+    end_line: int | None = None,
+    title: str | None = None,
+    details: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Register facts learned from reading a file. Auto-hashes content, updates existing or creates new.
+
+    Call this after reading a file to store what you learned. Prevents re-reading
+    the same file in future sessions.
+
+    Args:
+        path: File path (e.g. 'src/auth.py')
+        statement: What you learned (e.g. 'getUser() returns User | null, takes user_id: int')
+        subject: What the fact is about (e.g. 'getUser()')
+        kind: What kind of code fact (api/function/module/type/config/schema)
+        tags: Tags for categorization
+        start_line: Optional line range start (auto-detected if omitted)
+        end_line: Optional line range end (auto-detected if omitted)
+        title: Optional title (defaults to 'File: {filename}')
+        details: Optional additional details
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = register_file_read(
+                conn,
+                path=path,
+                statement=statement,
+                subject=subject,
+                kind=kind,
+                tags=tags,
+                start_line=start_line,
+                end_line=end_line,
+                title=title,
+                details=details,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+@mcp.tool()
+def register_file_write_tool(
+    path: str,
+    statement: str,
+    reason: str,
+    tags: list[str],
+    start_line: int | None = None,
+    end_line: int | None = None,
+    title: str | None = None,
+    details: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Register a file write/modification. Auto-hashes content, updates existing or creates new.
+
+    Call this after editing or writing a file to document what changed and why.
+    The commit-gate hook will block all other tools until you register the write.
+
+    Args:
+        path: File path (e.g. 'src/auth.py')
+        statement: What changed (e.g. 'Added input validation to getUser()')
+        reason: Why the change was made (e.g. 'Fix: getUser() crashed on null input')
+        tags: Tags for categorization
+        start_line: Optional line range start
+        end_line: Optional line range end
+        title: Optional title (defaults to 'File: {filename}')
+        details: Optional additional details
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = register_file_write(
+                conn,
+                path=path,
+                statement=statement,
+                reason=reason,
+                tags=tags,
+                start_line=start_line,
+                end_line=end_line,
+                title=title,
+                details=details,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
 
 
 # --- Typed wrapper tools ---
@@ -354,14 +488,14 @@ def _createTyped(type_: str, title: str, statement: str, tags: list[str],
                  metadata: dict[str, Any] | None = None,
                  project: str | None = None) -> str:
     """Generic typed create wrapper."""
-    with db_connection(project=project) as conn:
-        try:
+    try:
+        with db_connection(project=project) as conn:
             result = memory_create(conn, type=type_, title=title, statement=statement,
                                    tags=tags, details=details, evidence=evidence,
                                    related_memory_ids=related_memory_ids, metadata=metadata)
             return json.dumps(result, indent=2)
-        except ValueError as e:
-            return f"Error: {e}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
