@@ -1,6 +1,6 @@
 {
   "name": "@emiliano-go/totem",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Agent enforcement plugin for totem memory system (OpenCode, Claude Code, Kimi Code)",
   "keywords": [
     "opencode-plugin",
@@ -31,5 +31,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@emiliano-go/totem": "^0.4.3"
   }
 }

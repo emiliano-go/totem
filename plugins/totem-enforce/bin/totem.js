@@ -84,16 +84,18 @@ if (hasCommand("opencode --version")) {
       }
 
       if (!config.mcp) config.mcp = {};
-      if (!config.mcp.totem) {
+      const mcpCommand = ["uvx", "totem-mcp"];
+      const existing = config.mcp.totem;
+      if (!existing || JSON.stringify(existing.command) !== JSON.stringify(mcpCommand)) {
         config.mcp.totem = {
           type: "local",
-          command: ["uvx", "totem-mcp"],
+          command: mcpCommand,
           enabled: true,
         };
         changed = true;
-        console.log(`  → Added totem MCP server to opencode.json`);
+        console.log(`  → Set totem MCP server in opencode.json`);
       } else {
-        console.log(`  → totem MCP server already in opencode.json`);
+        console.log(`  → totem MCP server already correct`);
       }
 
       if (changed) {
