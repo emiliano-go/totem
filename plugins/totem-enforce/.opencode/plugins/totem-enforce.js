@@ -45,7 +45,7 @@ function tokenizeBash(command) {
 
 function totemSearch(dir, query, { types, tags } = {}) {
   try {
-    // Arg array, no shell — agent-controlled queries can't inject.
+    // Arg array, no shell: agent-controlled queries can't inject.
     // --project is a group-level option: it must precede the subcommand.
     const args = ["--project", dir, "search", "--query", query, "--limit", "1"]
     if (types) args.push("--types", types)
