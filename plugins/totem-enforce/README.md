@@ -10,7 +10,7 @@ npm install @emiliano-go/totem
 
 This installs:
 - Enforcement plugins for OpenCode, Claude Code, and Kimi Code (auto-configured by `npx totem`)
-- The `totem-mcp` Python MCP server (auto-installed via uvx or pip)
+- The `totem-mcp` Python MCP server (auto-installed or upgraded via pipx/uv/pip, registered as a pinned `uvx totem-mcp==<version>` command pre-warmed at install time)
 
 ## How it works
 
@@ -65,7 +65,7 @@ Or manually add to `~/.config/opencode/opencode.json`:
   "mcp": {
     "totem": {
       "type": "local",
-      "command": ["uvx", "totem-mcp"],
+      "command": ["uvx", "totem-mcp==<version>"],
       "enabled": true
     }
   }

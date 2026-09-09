@@ -1,6 +1,6 @@
 {
   "name": "totem-enforce",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Enforces totem-first workflow: memory gates + register-after-read/write commit-gates",
   "hooks": [
     {

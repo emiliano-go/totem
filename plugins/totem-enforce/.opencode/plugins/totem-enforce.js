@@ -57,19 +57,27 @@ function totemSearch(dir, query, { types, tags } = {}) {
   }
 }
 
+const MAX_SEARCH_TERMS = 5
+
+// Batches terms into one FTS5 OR query: a single `totem search` subprocess
+// per tool call instead of one per word (which flooded the process table
+// under parallel tool calls when nothing matched).
+function totemSearchAny(dir, terms, { types, tags } = {}) {
+  const clean = [...new Set(terms.map((t) => sanitizeFts5(t)).filter(Boolean))]
+  if (!clean.length) return false
+  const query = clean.slice(0, MAX_SEARCH_TERMS).map((t) => `"${t}"`).join(" OR ")
+  return totemSearch(dir, query, { types, tags })
+}
+
 function hasMemoryFor(dir, tool, args) {
   if (tool === "read") {
     const fp = args?.filePath || ""
     if (!fp) return false
     const name = fp.split("/").pop()
-    return totemSearch(dir, fp, { types: "implementation" })
-      || (name && totemSearch(dir, name, { types: "implementation" }))
+    return totemSearchAny(dir, [fp, name], { types: "implementation" })
   }
   if (tool === "grep" || tool === "glob") {
-    for (const w of tokenize(args?.pattern || args?.regex || "")) {
-      if (totemSearch(dir, w)) return true
-    }
-    return false
+    return totemSearchAny(dir, tokenize(args?.pattern || args?.regex || ""))
   }
   if (tool === "bash") {
     const command = args?.command || ""
@@ -77,10 +85,7 @@ function hasMemoryFor(dir, tool, args) {
     if (!SUBCMDS.test(first)) {
       return first && totemSearch(dir, first, { tags: `cmd:${first}` })
     }
-    for (const w of tokenizeBash(command)) {
-      if (totemSearch(dir, w)) return true
-    }
-    return false
+    return totemSearchAny(dir, tokenizeBash(command))
   }
   return false
 }

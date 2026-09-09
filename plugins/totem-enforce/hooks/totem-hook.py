@@ -19,12 +19,14 @@ Behavior:
 Always fails open: any error, missing CLI, or timeout results in allow.
 """
 
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 # Sub-commands that search/read file content
@@ -33,6 +35,10 @@ SUBCMDS = re.compile(
 )
 STOP_WORDS = {"the", "and", "for", "not", "with", "from", "this", "that"}
 FTS5_SPECIAL = re.compile(r'[:"\'+*^()~]')
+
+# Max terms per batched FTS5 query. Bounds every memory gate to ONE totem
+# subprocess per tool call no matter how many words the pattern has.
+MAX_SEARCH_TERMS = 5
 
 MCP_PREFIX = "mcp__totem__"
 REGISTER_READ = "mcp__totem__register_file_read_tool"
@@ -74,12 +80,50 @@ def save_state(session_id: str, state: dict) -> None:
         pass
 
 
+@contextmanager
+def hook_lock(session_id: str):
+    """Per-session non-blocking flock.
+
+    Parallel agent tool calls fire this hook concurrently; without the lock
+    they pile up totem subprocesses. A call that can't grab the lock fails
+    open (allows the tool) instead of queueing behind an in-flight search.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
+    lock = open(Path(tempfile.gettempdir()) / f"totem-hook-lock-{safe}", "w")
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+        else:
+            yield True
+    finally:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock.close()
+
+
 # ── Memory check ──────────────────────────────────────────────────
 
 
-def totem_search(query: str, project_dir: str, *, types: str | None = None,
-                 tags: str | None = None) -> bool:
-    """Return True if totem has at least one memory matching the query."""
+def totem_search_any(terms: list[str], project_dir: str, *, types: str | None = None,
+                     tags: str | None = None) -> bool:
+    """Return True if totem has at least one memory matching ANY term.
+
+    Batches terms into a single FTS5 OR query: one `totem search` subprocess
+    per tool call, instead of one per word (which swamped the process table
+    under parallel agent tool calls when nothing matched).
+    """
+    clean: list[str] = []
+    for term in terms:
+        term = FTS5_SPECIAL.sub(" ", term).strip()
+        if term and term not in clean:
+            clean.append(term)
+    if not clean:
+        return False
+    query = " OR ".join(f'"{t}"' for t in clean[:MAX_SEARCH_TERMS])
     try:
         # --project is a group-level option: it must precede the subcommand.
         cmd = ["totem", "--project", project_dir, "search",
@@ -95,6 +139,12 @@ def totem_search(query: str, project_dir: str, *, types: str | None = None,
         return len(items) > 0
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
         return False  # Fail open
+
+
+def totem_search(query: str, project_dir: str, *, types: str | None = None,
+                 tags: str | None = None) -> bool:
+    """Return True if totem has at least one memory matching the query."""
+    return totem_search_any([query], project_dir, types=types, tags=tags)
 
 
 def tokenize(text: str) -> list[str]:
@@ -135,28 +185,20 @@ def has_memory_for(tool_name: str, tool_input: dict, project_dir: str) -> bool:
         file_path = input_path(tool_input)
         if not file_path:
             return False
-        # Gate on real file memories only (implementation kind, matching path).
-        if totem_search(file_path, project_dir, types="implementation"):
-            return True
-        # Also gate on the file name alone (path separators hurt FTS).
-        name = Path(file_path).name
-        return bool(name) and totem_search(name, project_dir, types="implementation")
+        # Gate on real file memories only (implementation kind, matching path
+        # or its basename, since path separators hurt FTS. One subprocess.
+        return totem_search_any([file_path, Path(file_path).name], project_dir,
+                                types="implementation")
     if tool_name in ("Grep", "grep", "Glob", "glob"):
         pattern = tool_input.get("pattern", tool_input.get("regex", ""))
-        for word in tokenize(pattern):
-            if totem_search(word, project_dir):
-                return True
-        return False
+        return totem_search_any(tokenize(pattern), project_dir)
     if tool_name in ("Bash", "bash"):
         command = tool_input.get("command", "")
         first = command.strip().split()[0].split("/")[-1].lower() if command.strip() else ""
         if not SUBCMDS.match(first):
             # Plain command: only gate on known cmd: outcomes.
-            return bool(first) and totem_search(first, project_dir, tags=f"cmd:{first}")
-        for word in tokenize_bash(command):
-            if totem_search(word, project_dir):
-                return True
-        return False
+            return bool(first) and totem_search_any([first], project_dir, tags=f"cmd:{first}")
+        return totem_search_any(tokenize_bash(command), project_dir)
     return False
 
 
@@ -221,7 +263,11 @@ def cmd_pre(payload: dict) -> None:
             allow()
         if search_key in state.get("searched", {}):
             allow()  # Already blocked once this turn; agent checked memory.
-        if has_memory_for(tool_name, tool_input, project_dir):
+        with hook_lock(session_id) as acquired:
+            if not acquired:
+                allow()  # Another hook invocation is mid-search; fail open.
+            has_memory = has_memory_for(tool_name, tool_input, project_dir)
+        if has_memory:
             state.setdefault("searched", {})[search_key] = True
             save_state(session_id, state)
             if tool_name in READ_TOOLS:

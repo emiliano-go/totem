@@ -134,23 +134,23 @@ class GateTestCase(unittest.TestCase):
 
 
 class TestReadGate(GateTestCase):
-    @patch.object(hook, "totem_search", return_value=True)
+    @patch.object(hook, "totem_search_any", return_value=True)
     def test_read_denied_when_memory_exists(self, _):
         reason = run_denied(hook.cmd_pre, self.payload("Read", {"filePath": "/a/b.py"}))
         self.assertIsNotNone(reason)
         self.assertIn("engineering_context_tool", reason)
 
-    @patch.object(hook, "totem_search", return_value=True)
+    @patch.object(hook, "totem_search_any", return_value=True)
     def test_read_retry_allowed_after_block(self, _):
         p = self.payload("Read", {"filePath": "/a/b.py"})
         self.assertIsNotNone(run_denied(hook.cmd_pre, p))
         self.assertIsNone(run_denied(hook.cmd_pre, p))  # retry allowed
 
-    @patch.object(hook, "totem_search", return_value=False)
+    @patch.object(hook, "totem_search_any", return_value=False)
     def test_read_allowed_when_no_memory(self, _):
         self.assertIsNone(run_denied(hook.cmd_pre, self.payload("Read", {"filePath": "/a/b.py"})))
 
-    @patch.object(hook, "totem_search", return_value=True)
+    @patch.object(hook, "totem_search_any", return_value=True)
     def test_grep_denied_when_memory_exists(self, _):
         reason = run_denied(hook.cmd_pre, self.payload("Grep", {"pattern": "MemoryType"}))
         self.assertIsNotNone(reason)
@@ -168,7 +168,7 @@ class TestReadCommitGate(GateTestCase):
     def test_gate_cleared_by_register_read(self):
         run_cmd(hook.cmd_post, self.payload("Read", {"filePath": "/a/b.py"}))
         run_cmd(hook.cmd_pre, self.payload("mcp__totem__register_file_read_tool", {}))
-        with patch.object(hook, "totem_search", return_value=False):
+        with patch.object(hook, "totem_search_any", return_value=False):
             self.assertIsNone(run_denied(hook.cmd_pre, self.payload("Bash", {"command": "ls"})))
 
     def test_other_totem_tools_allowed_while_gated(self):
@@ -194,13 +194,13 @@ class TestWriteCommitGate(GateTestCase):
     def test_gate_cleared_by_register_write(self):
         run_cmd(hook.cmd_post, self.payload("Write", {"filePath": "/a/c.py"}))
         run_cmd(hook.cmd_pre, self.payload("mcp__totem__register_file_write_tool", {}))
-        with patch.object(hook, "totem_search", return_value=False):
+        with patch.object(hook, "totem_search_any", return_value=False):
             self.assertIsNone(run_denied(hook.cmd_pre, self.payload("Bash", {"command": "ls"})))
 
 
 class TestClear(GateTestCase):
     def test_clear_resets_gates_and_searched(self):
-        with patch.object(hook, "totem_search", return_value=True):
+        with patch.object(hook, "totem_search_any", return_value=True):
             p = self.payload("Read", {"filePath": "/a/b.py"})
             self.assertIsNotNone(run_denied(hook.cmd_pre, p))  # blocked, recorded
         run_cmd(hook.cmd_post, self.payload("Write", {"filePath": "/a/c.py"}))
@@ -235,10 +235,33 @@ class TestKimiPathSchema(GateTestCase):
         self.assertIn("register_file_write_tool", reason)
 
     def test_read_gate_fires_with_path_key(self):
-        with patch.object(hook, "totem_search", return_value=True):
+        with patch.object(hook, "totem_search_any", return_value=True):
             reason = run_denied(hook.cmd_pre, self.payload("Read", {"path": "/a/b.py"}))
         self.assertIsNotNone(reason)
         self.assertIn("memory", reason)
+
+
+class TestBatchedSearch(GateTestCase):
+    """Memory gates must cost ONE totem subprocess per tool call."""
+
+    @patch.object(hook.subprocess, "run")
+    def test_grep_batches_words_into_one_query(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+        p = self.payload("Grep", {"pattern": "alpha beta gamma delta epsilon zeta eta"})
+        self.assertIsNone(run_denied(hook.cmd_pre, p))
+        self.assertEqual(mock_run.call_count, 1)
+        cmd = mock_run.call_args[0][0]
+        query = cmd[cmd.index("--query") + 1]
+        self.assertIn(" OR ", query)
+        # Capped at MAX_SEARCH_TERMS: 7 words → 5 terms → 4 ORs.
+        self.assertEqual(query.count(" OR "), hook.MAX_SEARCH_TERMS - 1)
+
+    @patch.object(hook.subprocess, "run")
+    def test_read_gates_in_one_query(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+        p = self.payload("Read", {"filePath": "/a/b.py"})
+        self.assertIsNone(run_denied(hook.cmd_pre, p))
+        self.assertEqual(mock_run.call_count, 1)
 
 
 if __name__ == "__main__":

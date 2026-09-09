@@ -42,7 +42,7 @@ npm install @emiliano-go/totem
 npx @emiliano-go/totem
 ```
 
-The `npx` command auto-installs the Python MCP server and configures enforcement plugins for OpenCode, Claude Code, and Kimi Code.
+The `npx` command auto-installs or upgrades the Python MCP server, pins its version, and configures enforcement plugins for OpenCode, Claude Code, and Kimi Code. For Kimi Code it also registers a user-level MCP entry (`~/.kimi-code/mcp.json`) so totem is available in every project.
 
 ### Supported agents
 
@@ -50,7 +50,7 @@ The `npx` command auto-installs the Python MCP server and configures enforcement
 |-------|-----------|-----------------|
 | OpenCode | `tool.execute.before` JS plugin | Yes |
 | Claude Code | `PreToolUse`/`PostToolUse` hooks (`~/.claude/settings.json`) | Yes |
-| Kimi Code | plugin hooks (`kimi.plugin.json`) | Yes |
+| Kimi Code | `[[hooks]]` in `~/.kimi-code/config.toml` | Yes |
 
 ## Features
 
@@ -86,7 +86,7 @@ Agent reads file but finds nothing in memory
 
 ### OpenCode
 
-Add to `~/.config/opencode/opencode.json`:
+Add to `~/.config/opencode/opencode.json` (or let `npx @emiliano-go/totem` write it):
 
 ```json
 {
@@ -94,12 +94,14 @@ Add to `~/.config/opencode/opencode.json`:
   "mcp": {
     "totem": {
       "type": "local",
-      "command": ["totem-mcp"],
+      "command": ["uvx", "totem-mcp==<version>"],
       "enabled": true
     }
   }
 }
 ```
+
+The installer pins `<version>` to the npm package version and pre-warms the uvx cache, so agent startups use the cached environment and never hit the network.
 
 ### Claude Code
 
@@ -109,7 +111,7 @@ claude mcp add totem -- totem-mcp
 
 ### Kimi Code
 
-Hooks are auto-configured by `npx @emiliano-go/totem`.
+MCP server and hooks are auto-configured by `npx @emiliano-go/totem`: the MCP server goes in user-level `~/.kimi-code/mcp.json` (every project), and the hooks go in `~/.kimi-code/config.toml`.
 
 ### Manual setup
 

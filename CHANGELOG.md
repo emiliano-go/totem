@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1
+
+### Installer (`bin/totem.js`)
+
+- MCP server is registered as `uvx totem-mcp==<npm package version>` (pinned to the release) and pre-warmed during `npx totem`, so agent startups use the cached uvx environment and never hit the network. Falls back to the `totem-mcp` PATH binary when uvx is unavailable or the pin cannot be resolved. Supersedes the 0.5.0 "PATH binary so local installs take effect immediately" behavior for released versions.
+- Installer now upgrades stale installs: compares `totem --version` against the package version and runs `pipx upgrade` / `uv tool upgrade` / `pip install --upgrade` on mismatch (previously it only checked presence, so installs never moved off old versions).
+- Registers the totem MCP server in Kimi Code's user-level `~/.kimi-code/mcp.json` so totem is available in every project (project-level `.mcp.json` still overrides).
+- Wires the enforcement hooks into Kimi Code's `~/.kimi-code/config.toml` (`PreToolUse`/`PostToolUse`/`UserPromptSubmit` → `totem-hook.py pre|post|clear`). Idempotent, TOML-safe append; strips legacy per-script totem hook entries.
+- Fixed: crash with a raw stack trace when the CLI was installed but its bin dir was not on PATH (`execSync("totem --version")` was uncaught); now prints a clear error and exits 1.
+
+### Enforcement hooks
+
+- Memory gates cost ONE `totem search` subprocess per tool call: terms are batched into a single FTS5 `OR` query capped at 5, instead of one subprocess per word (a miss spawned one cold Python process per word, which flooded the process table under parallel tool calls).
+- Non-blocking per-session `flock` on all hooks: concurrent invocations fail open instead of stacking subprocesses.
+- Legacy `totem-enforce.py`/`totem-store-read.py`: same batching/lock fixes applied.
+
 ## 0.5.0
 
 ### Enforcement plugin (rewritten)

@@ -27,16 +27,106 @@ function copyFile(src, dest) {
   console.log(`  → ${path.relative(process.env.HOME || "~", dest)}`);
 }
 
-// ── 1. Install totem-mcp ──────────────────────────────────────────
+const PKG_VERSION = require(path.join(PKG_DIR, "package.json")).version;
 
-if (!hasCommand("totem --version")) {
-  console.log("[totem] totem-mcp not found. Installing...");
+function versionOlder(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+function totemVersion() {
+  try {
+    const out = execSync("totem --version", { encoding: "utf-8", timeout: 5000 });
+    const m = out.match(/(\d+\.\d+\.\d+)/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// MCP server command for agent configs. Pinned to this package's version and
+// pre-warmed HERE (install/update time, i.e. when `npx totem` runs) so agent
+// startups never hit the network; uvx caches environments per version, so
+// launches are instant. Falls back to the PATH binary when uvx is missing
+// or the pin cannot be resolved (e.g. PyPI lagging this npm release).
+let mcpCommandCache = null;
+function buildMcpCommand() {
+  if (mcpCommandCache) return mcpCommandCache;
+  if (!hasCommand("uvx --version")) return (mcpCommandCache = ["totem-mcp"]);
+  const spec = `totem-mcp==${PKG_VERSION}`;
+  try {
+    execSync(`uvx --from "${spec}" totem --version`, { stdio: "ignore", timeout: 120000 });
+    return (mcpCommandCache = ["uvx", spec]);
+  } catch {
+    return (mcpCommandCache = ["totem-mcp"]);
+  }
+}
+
+// ── Kimi hooks wiring ─────────────────────────────────────────────
+
+const KIMI_HOOKS_TOML = `[[hooks]]
+event = "PreToolUse"
+matcher = ".*"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py pre"
+timeout = 10
+
+[[hooks]]
+event = "PostToolUse"
+matcher = "Read|Edit|Write|MultiEdit|NotebookEdit"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py post"
+timeout = 10
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "python3 ~/.kimi-code/hooks/totem-hook.py clear"
+timeout = 5
+`;
+
+// Appends the totem [[hooks]] entries to ~/.kimi-code/config.toml. TOML-safe:
+// [[hooks]] blocks at EOF always extend the root hooks array. Idempotent: skips
+// if totem-hook.py is already referenced; strips legacy per-script totem hooks.
+function configureKimiHooks(configPath) {
+  let raw = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf-8") : "";
+  if (raw.includes("totem-hook.py")) {
+    console.log("  → totem hooks already wired in config.toml");
+    return;
+  }
+  if (/totem-(enforce|store-read|clear-state)\.py/.test(raw)) {
+    raw = raw
+      .split(/^(?=\[\[hooks\]\])/m)
+      .filter((block) => !/totem-(enforce|store-read|clear-state)\.py/.test(block))
+      .join("");
+  }
+  const cleaned = raw.trimEnd();
+  const next = (cleaned ? cleaned + "\n\n" : "") +
+    "# Totem enforcement hooks (managed by @emiliano-go/totem; do not edit)\n" +
+    KIMI_HOOKS_TOML;
+  fs.writeFileSync(configPath, next);
+  console.log("  → Wired totem hooks in ~/.kimi-code/config.toml");
+}
+
+// ── 1. Install/upgrade totem-mcp ──────────────────────────────────
+
+const current = totemVersion();
+if (current && !versionOlder(current, PKG_VERSION)) {
+  console.log(`[totem] totem-mcp ${current} satisfies ${PKG_VERSION}, skipping install`);
+} else {
+  if (current) {
+    console.log(`[totem] totem-mcp ${current} is older than ${PKG_VERSION}. Upgrading...`);
+  } else {
+    console.log("[totem] totem-mcp not found. Installing...");
+  }
   let installed = false;
 
   // Try pipx first (works on externally-managed Python like Arch Linux)
   if (!installed && hasCommand("pipx --version")) {
     try {
-      execSync("pipx install totem-mcp", { stdio: "inherit", timeout: 120000 });
+      execSync(current ? "pipx upgrade totem-mcp" : "pipx install totem-mcp", { stdio: "inherit", timeout: 120000 });
       installed = true;
     } catch {}
   }
@@ -44,7 +134,7 @@ if (!hasCommand("totem --version")) {
   // Try uv tool (runs in isolated env, no system Python conflict)
   if (!installed && hasCommand("uv --version")) {
     try {
-      execSync("uv tool install totem-mcp", { stdio: "inherit", timeout: 120000 });
+      execSync(current ? "uv tool upgrade totem-mcp" : "uv tool install totem-mcp", { stdio: "inherit", timeout: 120000 });
       installed = true;
     } catch {}
   }
@@ -53,23 +143,27 @@ if (!hasCommand("totem --version")) {
   if (!installed && (hasCommand("pip --version") || hasCommand("pip3 --version"))) {
     const pip = hasCommand("pip --version") ? "pip" : "pip3";
     try {
-      execSync(`${pip} install --user totem-mcp`, { stdio: "inherit", timeout: 120000 });
+      execSync(`${pip} install --user --upgrade totem-mcp`, { stdio: "inherit", timeout: 120000 });
       installed = true;
     } catch {}
   }
 
-  // Check if it became available (e.g. already installed via pipx/uvx)
-  if (!installed && !hasCommand("totem --version")) {
+  // Check that it became available (e.g. already installed via pipx/uvx)
+  if (!installed && !totemVersion()) {
     console.error("[totem] Install failed. Try one of:");
     console.error("  pipx install totem-mcp");
-    console.error("  uvx --install totem-mcp");
+    console.error("  uv tool install totem-mcp");
     console.error("  pip install --user totem-mcp");
     process.exit(1);
   }
 }
 
-const version = execSync("totem --version", { encoding: "utf-8", timeout: 5000 }).trim();
-console.log(`[totem] ${version}`);
+const version = totemVersion();
+if (!version) {
+  console.error("[totem] totem CLI not found on PATH after install.");
+  process.exit(1);
+}
+console.log(`[totem] totem-mcp ${version}`);
 
 // ── 2. Configure OpenCode ─────────────────────────────────────────
 
@@ -108,7 +202,7 @@ if (hasCommand("opencode --version")) {
       }
 
       if (!config.mcp) config.mcp = {};
-      const mcpCommand = ["totem-mcp"];
+      const mcpCommand = buildMcpCommand();
       const existing = config.mcp.totem;
       if (!existing || JSON.stringify(existing.command) !== JSON.stringify(mcpCommand)) {
         config.mcp.totem = {
@@ -135,7 +229,7 @@ if (hasCommand("opencode --version")) {
       mcp: {
         totem: {
           type: "local",
-          command: ["totem-mcp"],
+          command: buildMcpCommand(),
           enabled: true,
         },
       },
@@ -219,6 +313,31 @@ if (fs.existsSync(kimiHome) || hasCommand("kimi --version")) {
   mkdirp(path.join(kimiPluginDir, "hooks"));
   copyFile(path.join(PKG_DIR, "kimi.plugin.json"), path.join(kimiPluginDir, "plugin.json"));
   copyFile(path.join(HOOKS_DIR, "totem-hook.py"), path.join(kimiPluginDir, "hooks", "totem-hook.py"));
+
+  // Register MCP server at user level so totem is available in EVERY project,
+  // not just repos with a .mcp.json (project-level config overrides this).
+  // Merge with existing servers rather than replacing the file.
+  const kimiMcpPath = path.join(kimiHome, "mcp.json");
+  try {
+    let kimiMcp = { mcpServers: {} };
+    if (fs.existsSync(kimiMcpPath)) {
+      kimiMcp = JSON.parse(fs.readFileSync(kimiMcpPath, "utf-8"));
+      if (!kimiMcp.mcpServers || typeof kimiMcp.mcpServers !== "object") kimiMcp.mcpServers = {};
+    }
+    const cmd = buildMcpCommand();
+    kimiMcp.mcpServers.totem = { command: cmd[0], args: cmd.slice(1) };
+    fs.writeFileSync(kimiMcpPath, JSON.stringify(kimiMcp, null, 2) + "\n");
+    console.log("  → ~/.kimi-code/mcp.json");
+  } catch (e) {
+    console.log(`  → Could not update ~/.kimi-code/mcp.json: ${e.message}`);
+  }
+
+  // Wire enforcement hooks into ~/.kimi-code/config.toml (idempotent).
+  try {
+    configureKimiHooks(path.join(kimiHome, "config.toml"));
+  } catch (e) {
+    console.log(`  → Could not update ~/.kimi-code/config.toml: ${e.message}`);
+  }
 }
 
 console.log("[totem] Done. Restart your agent for changes to take effect.");
