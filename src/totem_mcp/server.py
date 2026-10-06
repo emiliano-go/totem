@@ -441,6 +441,7 @@ def register_file_read_tool(
     end_line: int | None = None,
     title: str | None = None,
     details: str | None = None,
+    symbol: str | None = None,
     project: str | None = None,
 ) -> str:
     """Register facts learned from reading a file. Auto-hashes content, updates existing or creates new.
@@ -458,6 +459,7 @@ def register_file_read_tool(
         end_line: Optional line range end (auto-detected if omitted)
         title: Optional title (defaults to 'File: {filename}')
         details: Optional additional details
+        symbol: Optional symbol the fact is about (e.g. 'UserService.authenticate'); makes evidence survive line moves
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -473,6 +475,7 @@ def register_file_read_tool(
                 end_line=end_line,
                 title=title,
                 details=details,
+                symbol=symbol,
             )
             return json.dumps(result, indent=2)
         except Exception as e:
@@ -489,6 +492,7 @@ def register_file_write_tool(
     end_line: int | None = None,
     title: str | None = None,
     details: str | None = None,
+    symbol: str | None = None,
     project: str | None = None,
 ) -> str:
     """Register a file write/modification. Auto-hashes content, updates existing or creates new.
@@ -505,6 +509,7 @@ def register_file_write_tool(
         end_line: Optional line range end
         title: Optional title (defaults to 'File: {filename}')
         details: Optional additional details
+        symbol: Optional symbol the change touches
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -519,6 +524,7 @@ def register_file_write_tool(
                 end_line=end_line,
                 title=title,
                 details=details,
+                symbol=symbol,
             )
             return json.dumps(result, indent=2)
         except Exception as e:

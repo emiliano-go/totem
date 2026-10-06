@@ -8,6 +8,7 @@ import json
 import turso
 
 from .db import (
+    get_item,
     get_open_conflicts,
     get_relations_for_items,
     init_db,
@@ -176,6 +177,7 @@ def engineering_context(
     include_stale: bool = False,
     current_task: str | None = None,
     paths: list[str] | None = None,
+    semantic_candidates=None,
 ) -> dict:
     """Assemble engineering context.
 
@@ -213,6 +215,33 @@ def engineering_context(
             seen_ids.add(item.id)
             all_items.append(item)
 
+    # Path activation: direct evidence matches plus one bounded relation hop;
+    # semantic_candidates is an optional extra candidate source (embeddings).
+    extra_ids: set[str] = set()
+    path_matched: set[str] = set()
+    if paths:
+        path_matched = {
+            item.id
+            for item in all_items
+            if {ev.path for ev in item.evidence} & set(paths)
+        }
+        for rel in get_relations_for_items(conn, list(path_matched)):
+            extra_ids.update({rel["from_id"], rel["to_id"]} - path_matched)
+    if semantic_candidates is not None:
+        try:
+            extra_ids.update(semantic_candidates(task or "") or [])
+        except Exception:
+            pass
+    if extra_ids:
+        known = {item.id for item in all_items}
+        for item_id in extra_ids:
+            if item_id in known:
+                continue
+            item = get_item(conn, item_id)
+            if item is not None:
+                all_items.append(item)
+                known.add(item.id)
+
     scored = []
     stale_items: list = []
     for item in all_items:
@@ -220,11 +249,9 @@ def engineering_context(
             continue
         if item.status in _SKIP_STATUSES:
             continue
-        # Filter by paths: only include items with evidence matching given paths
-        if paths:
-            item_paths = {ev.path for ev in item.evidence}
-            if not item_paths.intersection(paths):
-                continue
+        # Filter by paths, but keep relation-hop and semantic candidates
+        if paths and item.id not in path_matched and item.id not in extra_ids:
+            continue
         if item.status == MemoryStatus.POTENTIALLY_STALE:
             # Stale knowledge stays visible (in its own section) instead of
             # silently disappearing from context.
@@ -263,7 +290,14 @@ def engineering_context(
             key = (item.id, ev.path, ev.start_line, ev.end_line)
             if key in seen_warnings:
                 continue
-            if check_staleness(Path(ev.path), ev.start_line, ev.end_line, ev.content_hash):
+            if check_staleness(
+                Path(ev.path),
+                ev.start_line,
+                ev.end_line,
+                ev.content_hash,
+                symbol=ev.symbol,
+                blob_hash=ev.blob_hash,
+            ):
                 seen_warnings.add(key)
                 stale_warnings.append(
                     f"STALE: [{item.type.value}] {item.title}: {ev.path}:{ev.start_line}-{ev.end_line}"

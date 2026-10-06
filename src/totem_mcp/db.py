@@ -807,7 +807,7 @@ def get_relations_for_items(conn: turso.Connection, item_ids: list[str]) -> list
     placeholders = ", ".join("?" for _ in item_ids)
     rows = conn.execute(
         f"SELECT id, from_id, to_id, kind, created_at FROM memory_relations "
-        f"WHERE from_id IN ({placeholders}) AND to_id IN ({placeholders})",
+        f"WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
         (*item_ids, *item_ids),
     ).fetchall()
     return [_relation_from_row(r) for r in rows]
