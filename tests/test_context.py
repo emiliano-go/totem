@@ -74,3 +74,60 @@ class TestEngineeringContext:
         )
         assert result["omittedIds"], "expected some items omitted under tiny budget"
         assert not set(result["selectedIds"]) & set(result["omittedIds"])
+
+
+class TestEpistemicVisibility:
+    def test_resolved_conflict_leaves_context(self, fresh_db):
+        from totem_mcp.db import get_all_conflicts, get_conflicts_for_item
+        from totem_mcp.tools import memory_create, resolve_conflict
+
+        memory_create(
+            fresh_db, type="decision", title="Use Redis",
+            statement="We use Redis for the queue.", tags=["infra"],
+            metadata={"rationale": "atomic claims"},
+        )
+        second = memory_create(
+            fresh_db, type="decision", title="Use Redis",
+            statement="We use SQLite instead.", tags=["infra"],
+            metadata={"rationale": "simpler"},
+        )
+        assert get_conflicts_for_item(fresh_db, second["id"])
+
+        before = engineering_context(fresh_db, tags=["infra"], task="queue")
+        assert "Conflict:" in before["context"]
+
+        conflict_id = fresh_db.execute("SELECT id FROM conflicts").fetchone()[0]
+        resolve_conflict(fresh_db, conflict_id, "Use SQLite")
+
+        after = engineering_context(fresh_db, tags=["infra"], task="queue")
+        assert "Conflict:" not in after["context"]
+        assert get_all_conflicts(fresh_db)  # still available for audit
+
+    def test_stale_knowledge_stays_visible(self, fresh_db, tmp_path):
+        from totem_mcp.hashing import hash_content
+        from totem_mcp.tools import memory_create, memory_get
+
+        target = tmp_path / "code.py"
+        target.write_text("line one\nline two\n")
+        evidence = {
+            "path": str(target),
+            "startLine": 1,
+            "endLine": 2,
+            "contentHash": hash_content(target.read_text()),
+            "kind": "source",
+            "capturedAt": "2026-01-01T00:00:00+00:00",
+        }
+        item = memory_create(
+            fresh_db, type="gotcha", title="Evidence gotcha",
+            statement="This file validates tokens.", tags=["auth"],
+            evidence=[evidence],
+        )
+
+        target.write_text("changed\n")  # evidence goes stale
+        got = memory_get(fresh_db, item["id"])
+        assert got is not None
+
+        result = engineering_context(fresh_db, tags=["auth"], task="login")
+        assert "STALE KNOWLEDGE" in result["context"]
+        assert "Evidence gotcha" in result["context"]
+        assert item["id"] in result["staleIds"]

@@ -222,3 +222,26 @@ def test_user_db_path_env_override(monkeypatch, tmp_path):
 
     monkeypatch.delenv("TOTEM_USER_DB")
     assert db_mod.get_user_db_path().name == "totem.db"
+
+
+def test_schema_version_recorded(fresh_db):
+    from totem_mcp.db import SCHEMA_VERSION, _schema_version
+
+    assert _schema_version(fresh_db) == SCHEMA_VERSION
+
+
+def test_legacy_db_migrates_to_current_version(db_path):
+    from totem_mcp.db import SCHEMA_VERSION, _schema_version, connect, init_db
+
+    conn = connect(db_path=db_path)
+    conn.executescript(OLD_LAYOUT)
+    conn.commit()
+
+    init_db(conn)
+
+    assert _schema_version(conn) == SCHEMA_VERSION
+    row = conn.execute(
+        "SELECT 1 FROM pragma_table_info('memory_items') WHERE name = 'scope'"
+    ).fetchone()
+    assert row is not None
+    conn.close()
