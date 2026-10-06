@@ -168,6 +168,20 @@ def memory_create(
         if superseded is None:
             raise ValueError(f"supersedes_id not found: {supersedes_id}")
 
+    # Density: an identical claim updates rather than duplicates.
+    normalized = " ".join(statement.lower().split())
+    for existing_item in get_all_items(conn):
+        if " ".join((existing_item.statement or "").lower().split()) == normalized:
+            return {
+                "id": existing_item.id,
+                "status": existing_item.status.value,
+                "duplicate": True,
+                "warnings": [
+                    f"Identical statement already stored as {existing_item.id}; "
+                    "update it instead of creating a duplicate."
+                ],
+            }
+
     conflicts = detect_conflicts(conn, item)
 
     # Dedup: warn if title already exists
@@ -199,6 +213,10 @@ def memory_create(
         )
     if dedup_warning:
         warnings.append(dedup_warning)
+    if len(statement.strip()) < 20:
+        warnings.append(
+            "Statement is very short; prefer a self-contained, durable claim."
+        )
 
     return {
         "id": item.id,

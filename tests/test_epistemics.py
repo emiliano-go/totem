@@ -11,24 +11,28 @@ from totem_mcp.tools import memory_create, memory_relate
 
 def test_confidence_derived_from_provenance(fresh_db):
     agent = memory_create(
-        fresh_db, type="gotcha", title="Agent claim", statement="S", tags=["t"]
+        fresh_db, type="gotcha", title="Agent claim",
+        statement="An agent inferred this claim.", tags=["t"],
     )
     assert get_item(fresh_db, agent["id"]).confidence == 0.6
 
     user = memory_create(
-        fresh_db, type="gotcha", title="User claim", statement="S", tags=["t"],
+        fresh_db, type="gotcha", title="User claim",
+        statement="The user asserted this claim.", tags=["t"],
         asserted_by="user",
     )
     assert get_item(fresh_db, user["id"]).confidence == 1.0
 
     tested = memory_create(
-        fresh_db, type="gotcha", title="Test claim", statement="S", tags=["t"],
+        fresh_db, type="gotcha", title="Test claim",
+        statement="A test proved this claim.", tags=["t"],
         asserted_by="test",
     )
     assert get_item(fresh_db, tested["id"]).confidence == 0.95
 
     explicit = memory_create(
-        fresh_db, type="gotcha", title="Explicit", statement="S", tags=["t"],
+        fresh_db, type="gotcha", title="Explicit",
+        statement="This claim carries an explicit confidence.", tags=["t"],
         confidence=0.33, asserted_by="user",
     )
     assert get_item(fresh_db, explicit["id"]).confidence == 0.33
@@ -61,16 +65,19 @@ def test_applicability_roundtrip(fresh_db):
 
 def test_scope_precedence_and_user_context(fresh_db):
     memory_create(
-        fresh_db, type="gotcha", title="Project fact", statement="S",
-        tags=["db"], scope='{"kind": "project", "value": ""}',
+        fresh_db, type="gotcha", title="Project fact",
+        statement="This is a project-scoped fact.", tags=["db"],
+        scope='{"kind": "project", "value": ""}',
     )
     memory_create(
-        fresh_db, type="gotcha", title="Task fact", statement="S",
-        tags=["db"], scope='{"kind": "task", "value": "migrate"}',
+        fresh_db, type="gotcha", title="Task fact",
+        statement="This is a task-scoped fact.", tags=["db"],
+        scope='{"kind": "task", "value": "migrate"}',
     )
     memory_create(
-        fresh_db, type="gotcha", title="User fact", statement="S",
-        tags=["db"], scope='{"kind": "user", "value": "global"}',
+        fresh_db, type="gotcha", title="User fact",
+        statement="This is a user-scoped fact.", tags=["db"],
+        scope='{"kind": "user", "value": "global"}',
     )
     result = engineering_context(fresh_db, tags=["db"], task="migrate")
     text = result["context"]
@@ -119,3 +126,19 @@ def test_invalidates_marks_target(fresh_db):
     memory_relate(fresh_db, new["id"], old["id"], "invalidates")
     result = engineering_context(fresh_db, tags=["t"], task="t")
     assert "Old gotcha" not in result["context"]
+
+
+def test_statement_dedup_returns_existing(fresh_db):
+    first = memory_create(
+        fresh_db, type="gotcha", title="One", statement="Same claim here.", tags=["t"]
+    )
+    second = memory_create(
+        fresh_db, type="gotcha", title="Two", statement="  same   claim HERE. ", tags=["t"]
+    )
+    assert second.get("duplicate") is True
+    assert second["id"] == first["id"]
+
+
+def test_short_statement_warning(fresh_db):
+    result = memory_create(fresh_db, type="gotcha", title="Tiny", statement="x", tags=["t"])
+    assert any("very short" in w for w in result.get("warnings", []))

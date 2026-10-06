@@ -4,9 +4,12 @@ import { execFileSync } from "child_process"
 // 1. Read gate: block read/grep/glob/bash when totem has relevant memory,
 //    redirecting to the memory tools. Retry after checking memory is allowed.
 // 2. Read commit-gate: after a successful read, all non-totem tools are
-//    blocked until totem_register_file_read_tool is called.
+//    blocked until totem_register_file_read_tool is called for that file
+//    (gates are per file, so parallel reads each need registration).
 // 3. Write commit-gate: after edit/write, blocked until
 //    totem_register_file_write_tool is called.
+// 4. Verify gate: reading a file with an invariant/constraint tagged
+//    verify:<file> requires the registration to carry a verify tag.
 // State is per-session (keyed by sessionID), reset on session.idle.
 
 const sessions = new Map()
@@ -18,7 +21,7 @@ const SUBCMDS = /^(grep|find|cat|head|tail|wc|sort|uniq|awk|sed|less|more|diff|c
 function getState(sessionID) {
   let s = sessions.get(sessionID)
   if (!s) {
-    s = { searched: {}, pendingRead: null, pendingWrite: null }
+    s = { searched: {}, pendingReads: {}, pendingWrites: {}, pendingVerify: {} }
     sessions.set(sessionID, s)
   }
   return s
@@ -57,19 +60,27 @@ function totemSearch(dir, query, { types, tags } = {}) {
   }
 }
 
+const MAX_SEARCH_TERMS = 5
+
+// Batches terms into one FTS5 OR query: a single `totem search` subprocess
+// per tool call instead of one per word (which flooded the process table
+// under parallel tool calls when nothing matched).
+function totemSearchAny(dir, terms, { types, tags } = {}) {
+  const clean = [...new Set(terms.map((t) => sanitizeFts5(t)).filter(Boolean))]
+  if (!clean.length) return false
+  const query = clean.slice(0, MAX_SEARCH_TERMS).map((t) => `"${t}"`).join(" OR ")
+  return totemSearch(dir, query, { types, tags })
+}
+
 function hasMemoryFor(dir, tool, args) {
   if (tool === "read") {
     const fp = args?.filePath || ""
     if (!fp) return false
     const name = fp.split("/").pop()
-    return totemSearch(dir, fp, { types: "implementation" })
-      || (name && totemSearch(dir, name, { types: "implementation" }))
+    return totemSearchAny(dir, [fp, name], { types: "implementation" })
   }
   if (tool === "grep" || tool === "glob") {
-    for (const w of tokenize(args?.pattern || args?.regex || "")) {
-      if (totemSearch(dir, w)) return true
-    }
-    return false
+    return totemSearchAny(dir, tokenize(args?.pattern || args?.regex || ""))
   }
   if (tool === "bash") {
     const command = args?.command || ""
@@ -77,12 +88,17 @@ function hasMemoryFor(dir, tool, args) {
     if (!SUBCMDS.test(first)) {
       return first && totemSearch(dir, first, { tags: `cmd:${first}` })
     }
-    for (const w of tokenizeBash(command)) {
-      if (totemSearch(dir, w)) return true
-    }
-    return false
+    return totemSearchAny(dir, tokenizeBash(command))
   }
   return false
+}
+
+function hasVerifyMemory(dir, filePath) {
+  const name = filePath.split("/").pop()
+  return (
+    totemSearchAny(dir, [name], { types: "invariant,constraint", tags: `verify:${name}` }) ||
+    totemSearchAny(dir, [filePath], { types: "invariant,constraint", tags: `verify:${filePath}` })
+  )
 }
 
 function buildSearchKey(tool, args) {
@@ -100,21 +116,43 @@ export const TotemEnforce = async ({ directory } = {}) => {
       const tool = input.tool
       const state = getState(input.sessionID || "default")
 
-      // 1. Register calls clear their gate.
-      if (tool === "totem_register_file_read_tool") { state.pendingRead = null; return }
-      if (tool === "totem_register_file_write_tool") { state.pendingWrite = null; return }
+      // 1. Register calls clear their own file's gate (parallel reads stay gated).
+      if (tool === "totem_register_file_read_tool") {
+        const path = output.args?.path
+        if (path && state.pendingVerify[path]) {
+          const tags = output.args?.tags || []
+          if (!tags.some((tag) => String(tag).startsWith("verify"))) {
+            throw new Error(
+              `${path} has an invariant/constraint tagged verify. Record the verification ` +
+              `by calling register_file_read_tool with tags including 'verify:${path}'.`
+            )
+          }
+          delete state.pendingVerify[path]
+        }
+        if (path) delete state.pendingReads[path]
+        else state.pendingReads = {}
+        return
+      }
+      if (tool === "totem_register_file_write_tool") {
+        const path = output.args?.path
+        if (path) delete state.pendingWrites[path]
+        else state.pendingWrites = {}
+        return
+      }
 
-      // 2. Commit-gate: pending registration blocks all non-totem tools.
+      // 2. Commit-gate: pending registrations block all non-totem tools.
       if (!tool.startsWith("totem_")) {
-        if (state.pendingRead) {
+        const reads = Object.keys(state.pendingReads)
+        if (reads.length) {
           throw new Error(
-            `You read ${state.pendingRead}. You MUST call register_file_read_tool ` +
+            `You read: ${reads.join(", ")}. You MUST call register_file_read_tool for each ` +
             `with what you learned (path, subject, kind, statement, tags) before doing anything else.`
           )
         }
-        if (state.pendingWrite) {
+        const writes = Object.keys(state.pendingWrites)
+        if (writes.length) {
           throw new Error(
-            `You modified ${state.pendingWrite}. You MUST call register_file_write_tool ` +
+            `You modified: ${writes.join(", ")}. You MUST call register_file_write_tool ` +
             `documenting what changed and why before doing anything else.`
           )
         }
@@ -149,8 +187,11 @@ export const TotemEnforce = async ({ directory } = {}) => {
       delete state.lastCall[input.callID]
       // Don't arm gates for failed tool calls.
       if (output.error) return
-      if (call.tool === "read") state.pendingRead = call.filePath
-      if (call.tool === "edit" || call.tool === "write") state.pendingWrite = call.filePath
+      if (call.tool === "read") {
+        state.pendingReads[call.filePath] = true
+        if (hasVerifyMemory(dir, call.filePath)) state.pendingVerify[call.filePath] = true
+      }
+      if (call.tool === "edit" || call.tool === "write") state.pendingWrites[call.filePath] = true
     },
 
     event: async ({ event }) => {
