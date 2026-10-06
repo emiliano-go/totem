@@ -2,23 +2,72 @@
 
 from __future__ import annotations
 
+import fnmatch
+import json
+
 import turso
 
-from .db import get_open_conflicts, init_db, list_items, connect, get_user_db_path
+from .db import (
+    get_open_conflicts,
+    get_relations_for_items,
+    init_db,
+    list_items,
+    connect,
+    get_user_db_path,
+)
 from .hashing import check_staleness
-from .models import Conflict, MemoryStatus, MemoryType
+from .models import Conflict, MemoryStatus, MemoryType, scope_kind
 from pathlib import Path
 
 # Statuses to skip in context output
-_SKIP_STATUSES = {MemoryStatus.DELETED, MemoryStatus.RESOLVED, MemoryStatus.SUPERSEDED}
+_SKIP_STATUSES = {
+    MemoryStatus.DELETED,
+    MemoryStatus.RESOLVED,
+    MemoryStatus.SUPERSEDED,
+    MemoryStatus.INVALIDATED,
+}
 
 # Types that get 1.25x score multiplier (spec §11)
 _BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGUITY}
 
 
-def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> float:
+def _scope_value(scope: str | None) -> str:
+    if not scope:
+        return ""
+    text = scope.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return str(data.get("value") or "")
+        except ValueError:
+            pass
+    return text
+
+
+def _scope_boost(item, paths: list[str] | None) -> float:
+    """Scope precedence: task/path-specific knowledge outranks project/global."""
+    kind = scope_kind(item.scope)
+    if kind == "task":
+        return 1.15
+    if kind == "user":
+        return 1.05
+    if kind == "path" and paths:
+        value = _scope_value(item.scope)
+        if value and any(fnmatch.fnmatch(p, value) or value in p for p in paths):
+            return 1.15
+    return 1.0
+
+
+def _score_item(
+    item,
+    tags: list[str],
+    task_words: set[str] | None = None,
+    paths: list[str] | None = None,
+) -> float:
     """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.25*importance
-    + 0.15*confidence + 0.10*recency. Invariants/constraints/ambiguities: 1.25x. Stale: 0.5x."""
+    + 0.15*confidence + 0.10*recency. Invariants/constraints/ambiguities: 1.25x.
+    Scope precedence applies; stale: 0.5x."""
     tag_match = len(set(item.tags) & set(tags)) / max(len(tags), 1)
     recency = 1.0
 
@@ -40,6 +89,7 @@ def _score_item(item, tags: list[str], task_words: set[str] | None = None) -> fl
     )
     if item.type in _BOOSTED_TYPES:
         score *= 1.25
+    score *= _scope_boost(item, paths)
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
     return score
@@ -53,6 +103,14 @@ def _serialize_item(item) -> str:
     lines.append(f"  Tags: {', '.join(item.tags)}")
     lines.append(f"  Confidence: {item.confidence} | Importance: {item.importance}")
     lines.append(f"  Status: {item.status.value}")
+    if item.scope:
+        kind = scope_kind(item.scope)
+        value = _scope_value(item.scope)
+        lines.append(f"  Scope: {kind} ({value})" if value and value != kind else f"  Scope: {kind}")
+    if item.asserted_by:
+        lines.append(f"  Asserted by: {item.asserted_by}")
+    if item.applicability:
+        lines.append(f"  Applicability: {item.applicability}")
     if item.evidence:
         refs = ", ".join(f"{ev.path}:{ev.start_line}-{ev.end_line}" for ev in item.evidence)
         lines.append(f"  Evidence: {refs}")
@@ -173,7 +231,7 @@ def engineering_context(
             stale_items.append(item)
             if not include_stale:
                 continue
-        score = _score_item(item, tags, task_words)
+        score = _score_item(item, tags, task_words, paths)
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -214,9 +272,11 @@ def engineering_context(
     # Load unresolved conflicts, never budget-truncated
     stored_conflicts = get_open_conflicts(conn)
 
-    # Group by type for output ordering
+    # Group by type for output ordering (user-scope items live in USER CONTEXT)
     grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
     for _, item in scored:
+        if scope_kind(item.scope) == "user":
+            continue
         if item.type in grouped:
             grouped[item.type.value].append(item)
 
@@ -226,6 +286,17 @@ def engineering_context(
     # TASK
     if task:
         sections.append(f"TASK: {task}")
+
+    # USER CONTEXT: globally applicable owner memory, always shown first
+    user_items = [item for _, item in scored if scope_kind(item.scope) == "user"]
+    sections.append("\nUSER CONTEXT:")
+    if user_items:
+        for item in user_items:
+            sections.append(_serialize_item(item))
+    else:
+        sections.append("  (none)")
+
+    sections.append("\nPROJECT CONTEXT:")
 
     # BLOCKING AMBIGUITIES: always shown, never budget-truncated
     if blocking_ambiguities:
@@ -237,11 +308,26 @@ def engineering_context(
     else:
         sections.append("\nBLOCKING AMBIGUITIES: (none)")
 
-    # CONFLICTS: always shown, never budget-truncated
-    if stored_conflicts:
+    # CONFLICTS: stored + explicit contradicts relations, never budget-truncated
+    relation_conflicts: list[str] = []
+    by_id = {item.id: item for _, item in scored}
+    selected_all = [item.id for _, item in scored] + [i.id for i in stale_items]
+    relations = get_relations_for_items(conn, selected_all)
+    for rel in relations:
+        if rel["kind"] != "contradicts":
+            continue
+        a = by_id.get(rel["from_id"])
+        b = by_id.get(rel["to_id"])
+        relation_conflicts.append(
+            f"  [relation] {(a.title if a else rel['from_id'])} contradicts "
+            f"{(b.title if b else rel['to_id'])}"
+        )
+    if stored_conflicts or relation_conflicts:
         sections.append("\nCONTEXT CONFLICTS:")
         for c in stored_conflicts:
             sections.append(_serialize_conflict(c))
+        for line in relation_conflicts:
+            sections.append(line)
     else:
         sections.append("\nCONTEXT CONFLICTS: (none)")
 
@@ -257,7 +343,9 @@ def engineering_context(
 
     token_count = 0
     truncated = False
-    included_ids: set[str] = {a["id"] for a in blocking_ambiguities}
+    included_ids: set[str] = {a["id"] for a in blocking_ambiguities} | {
+        item.id for item in user_items
+    }
     omitted_ids: list[str] = []
 
     for type_ in TYPE_ORDER:
@@ -335,5 +423,6 @@ def engineering_context(
         "omittedIds": omitted_ids,
         "staleIds": stale_ids,
         "conflicts": [c.model_dump(by_alias=True) for c in stored_conflicts],
+        "relations": relations,
         "warnings": stale_warnings,
     }

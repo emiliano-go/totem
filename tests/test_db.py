@@ -113,6 +113,7 @@ def migrated_db(db_path):
     conn.execute("ALTER TABLE memory_items ADD COLUMN scope TEXT")
     conn.executescript(CREATE_FTS)
     conn.commit()
+    init_db(conn)  # v3 -> v4: provenance columns added
     yield conn
     conn.close()
 

@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS memory_items (
     verified_at TEXT,
     verified_commit TEXT,
     metadata TEXT,
-    schema_version INTEGER NOT NULL DEFAULT 1
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    asserted_by TEXT,
+    applicability TEXT
 );
 """
 
@@ -61,6 +63,16 @@ CREATE TABLE IF NOT EXISTS conflicts (
     created_at TEXT NOT NULL,
     resolved_at TEXT,
     resolution TEXT
+);
+"""
+
+CREATE_RELATIONS = """
+CREATE TABLE IF NOT EXISTS memory_relations (
+    id TEXT PRIMARY KEY,
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -192,6 +204,7 @@ def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
     conn.executescript(CREATE_HISTORY)
+    conn.executescript(CREATE_RELATIONS)
     conn.executescript(CREATE_META)
     _migrate(conn)
     conn.commit()
@@ -207,6 +220,8 @@ def _migrate(conn: turso.Connection) -> None:
     if version < 3:
         _migrate_verified_commit(conn)
         _migrate_scope(conn)
+    if version < 4:
+        _migrate_epistemics(conn)
     _set_schema_version(conn, SCHEMA_VERSION)
 
 
@@ -235,11 +250,20 @@ def _migrate_scope(conn: turso.Connection) -> None:
         pass  # column already exists
 
 
+def _migrate_epistemics(conn: turso.Connection) -> None:
+    """v4: provenance and applicability columns."""
+    for col in ("asserted_by TEXT", "applicability TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE memory_items ADD COLUMN {col}")
+        except Exception:
+            pass  # column already exists
+
+
 COLUMNS = [
     "id", "type", "title", "statement", "details", "tags", "status",
     "confidence", "importance", "evidence", "related_memory_ids",
     "created_at", "updated_at", "verified_at", "metadata",
-    "schema_version", "verified_commit", "scope",
+    "schema_version", "verified_commit", "scope", "asserted_by", "applicability",
 ]
 COL_IDX = {name: i for i, name in enumerate(COLUMNS)}
 # Explicit column list for SELECTs. NEVER use SELECT * on memory_items:
@@ -268,6 +292,8 @@ def _row_to_item(row: tuple) -> MemoryItem:
         updated_at=row[r["updated_at"]],
         verified_at=row[r["verified_at"]],
         verified_commit=row[r["verified_commit"]],
+        asserted_by=row[r["asserted_by"]],
+        applicability=row[r["applicability"]],
         metadata=json.loads(row[r["metadata"]]) if row[r["metadata"]] else None,
     )
 
@@ -277,8 +303,9 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
         """INSERT INTO memory_items
            (id, type, title, statement, details, tags, status, confidence,
             importance, scope, evidence, related_memory_ids, created_at, updated_at,
-            verified_at, verified_commit, metadata, schema_version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            verified_at, verified_commit, metadata, schema_version,
+            asserted_by, applicability)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item.id,
             item.type.value,
@@ -298,6 +325,8 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
             item.verified_commit,
             json.dumps(item.metadata) if item.metadata else None,
             SCHEMA_VERSION,
+            item.asserted_by,
+            item.applicability,
         ),
     )
     conn.commit()
@@ -722,3 +751,70 @@ def init_project(project_dir: Path) -> dict:
         "already_existed": already_existed,
         "agent_config_copied": copied or None,
     }
+
+
+RELATION_KINDS = (
+    "supersedes",
+    "contradicts",
+    "invalidates",
+    "derived_from",
+    "verified_by",
+    "refines",
+    "depends_on",
+)
+
+
+def insert_relation(
+    conn: turso.Connection, from_id: str, to_id: str, kind: str
+) -> dict:
+    """Create a typed relation between two memories."""
+    from datetime import datetime, timezone
+
+    if kind not in RELATION_KINDS:
+        raise ValueError(f"kind must be one of: {', '.join(RELATION_KINDS)}")
+    relation_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO memory_relations (id, from_id, to_id, kind, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (relation_id, from_id, to_id, kind, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    return {"id": relation_id, "from_id": from_id, "to_id": to_id, "kind": kind}
+
+
+def _relation_from_row(row) -> dict:
+    return {
+        "id": row[0],
+        "from_id": row[1],
+        "to_id": row[2],
+        "kind": row[3],
+        "created_at": row[4],
+    }
+
+
+def get_relations_for_item(conn: turso.Connection, item_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, from_id, to_id, kind, created_at FROM memory_relations "
+        "WHERE from_id = ? OR to_id = ?",
+        (item_id, item_id),
+    ).fetchall()
+    return [_relation_from_row(r) for r in rows]
+
+
+def get_relations_for_items(conn: turso.Connection, item_ids: list[str]) -> list[dict]:
+    if not item_ids:
+        return []
+    placeholders = ", ".join("?" for _ in item_ids)
+    rows = conn.execute(
+        f"SELECT id, from_id, to_id, kind, created_at FROM memory_relations "
+        f"WHERE from_id IN ({placeholders}) AND to_id IN ({placeholders})",
+        (*item_ids, *item_ids),
+    ).fetchall()
+    return [_relation_from_row(r) for r in rows]
+
+
+def get_all_relations(conn: turso.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, from_id, to_id, kind, created_at FROM memory_relations"
+    ).fetchall()
+    return [_relation_from_row(r) for r in rows]

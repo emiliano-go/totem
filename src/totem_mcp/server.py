@@ -12,6 +12,8 @@ from .db import db_connection
 from .db import list_task_items, list_command_items
 from .tools import (
     memory_create,
+    memory_relate,
+    memory_relations,
     memory_delete,
     memory_export,
     memory_get,
@@ -50,11 +52,15 @@ def memory_create_tool(
     statement: str,
     tags: list[str],
     details: str | None = None,
-    confidence: float = 1.0,
+    confidence: float | None = None,
     importance: float = 0.5,
     evidence: list[dict[str, Any]] | None = None,
     related_memory_ids: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    asserted_by: str | None = None,
+    applicability: str | None = None,
+    scope: str | None = None,
+    supersedes_id: str | None = None,
     project: str | None = None,
 ) -> str:
     """Create a new memory item.
@@ -65,11 +71,15 @@ def memory_create_tool(
         statement: The factual claim being stored
         tags: At least one tag for categorization
         details: Optional additional details
-        confidence: 0 to 1, default 1.0
+        confidence: 0 to 1; derived from asserted_by when omitted (user 1.0, test 0.95, source/git/doc 0.9, runtime 0.7, agent 0.6; hypotheses cap at 0.4)
         importance: 0 to 1, default 0.5
         evidence: List of evidence objects with path, startLine, endLine, contentHash
         related_memory_ids: IDs of related memory items
         metadata: Extra metadata. Decision items accept 'rationale' (strongly recommended: explain WHY this decision was made, alternatives considered). Invariant items require 'verificationMethod' and 'condition'
+        asserted_by: Who established the claim: user, test, source, git, doc, runtime, agent (default agent)
+        applicability: current, legacy, deprecated, planned (orthogonal to status)
+        scope: user, project, path, task — or JSON {"kind": "...", "value": "..."}
+        supersedes_id: ID of a memory this one replaces (marks it superseded)
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -86,8 +96,44 @@ def memory_create_tool(
                 evidence=evidence,
                 related_memory_ids=related_memory_ids,
                 metadata=metadata,
+                asserted_by=asserted_by,
+                applicability=applicability,
+                scope=scope,
+                supersedes_id=supersedes_id,
             )
             return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+@mcp.tool()
+def memory_relate_tool(
+    from_id: str,
+    to_id: str,
+    kind: str,
+    project: str | None = None,
+) -> str:
+    """Create a typed relation between two memories.
+
+    Args:
+        from_id: Source memory ID
+        to_id: Target memory ID
+        kind: supersedes, contradicts, invalidates, derived_from, verified_by, refines, depends_on (supersedes/invalidates update the target status)
+        project: Optional project root path.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_relate(conn, from_id, to_id, kind), indent=2)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+@mcp.tool()
+def memory_relations_tool(id: str, project: str | None = None) -> str:
+    """List the typed relations involving a memory."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_relations(conn, id), indent=2)
         except Exception as e:
             return f"Error: {e}"
 
