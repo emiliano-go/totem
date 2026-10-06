@@ -212,3 +212,13 @@ class TestDbConnection:
         with pytest.raises(Exception):
             with db_connection(project=str(proj)):
                 pass
+
+
+def test_user_db_path_env_override(monkeypatch, tmp_path):
+    from totem_mcp import db as db_mod
+
+    monkeypatch.setenv("TOTEM_USER_DB", str(tmp_path / "user.db"))
+    assert db_mod.get_user_db_path() == tmp_path / "user.db"
+
+    monkeypatch.delenv("TOTEM_USER_DB")
+    assert db_mod.get_user_db_path().name == "totem.db"

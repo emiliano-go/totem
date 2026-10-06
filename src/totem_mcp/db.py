@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -103,6 +104,14 @@ def get_db_path(project: str | None = None) -> Path:
 
 
 def get_user_db_path() -> Path:
+    """Global user memory DB; ``TOTEM_USER_DB`` overrides the default location.
+
+    Hosts that keep their data in a volume (Hestia) point this at a persistent
+    path, and tests isolate it to a temp directory.
+    """
+    override = os.environ.get("TOTEM_USER_DB")
+    if override:
+        return Path(override).expanduser()
     return Path.home() / ".local" / "share" / "totem" / "totem.db"
 
 
