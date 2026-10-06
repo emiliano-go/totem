@@ -12,9 +12,12 @@ Behavior:
      Read and redirect to memory. The retry (after the agent checks memory) is
      allowed via the per-turn "searched" cache.
   2. Read commit-gate: after a successful Read, all non-totem tools are denied
-     until mcp__totem__register_file_read_tool is called.
+     until mcp__totem__register_file_read_tool is called for that file. Gates
+     are per file, so parallel reads each need their own registration.
   3. Write commit-gate: after Edit/Write/MultiEdit/NotebookEdit, all non-totem
      tools are denied until mcp__totem__register_file_write_tool is called.
+  4. Verify gate: reading a file that has an invariant/constraint tagged
+     verify:<file> requires the registration to carry a verify tag.
 
 Always fails open: any error, missing CLI, or timeout results in allow.
 """
@@ -63,14 +66,33 @@ def get_state_path(session_id: str) -> Path:
     return Path(tempfile.gettempdir()) / f"totem-hook-state-{safe}.json"
 
 
+def _normalize_state(state: dict) -> dict:
+    """Migrate legacy single-slot gates to per-file maps."""
+    if "pending_read" in state:
+        legacy = state.pop("pending_read")
+        state.setdefault("pending_reads", {})
+        if legacy:
+            state["pending_reads"][legacy] = True
+    if "pending_write" in state:
+        legacy = state.pop("pending_write")
+        state.setdefault("pending_writes", {})
+        if legacy:
+            state["pending_writes"][legacy] = True
+    state.setdefault("searched", {})
+    state.setdefault("pending_reads", {})
+    state.setdefault("pending_writes", {})
+    state.setdefault("pending_verify", {})
+    return state
+
+
 def load_state(session_id: str) -> dict:
     path = get_state_path(session_id)
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            return _normalize_state(json.loads(path.read_text()))
         except (json.JSONDecodeError, OSError):
             pass
-    return {"searched": {}, "pending_read": None, "pending_write": None}
+    return _normalize_state({})
 
 
 def save_state(session_id: str, state: dict) -> None:
@@ -179,6 +201,19 @@ def build_search_key(tool_name: str, tool_input: dict) -> str:
     return ""
 
 
+def has_verify_memory(file_path: str, project_dir: str) -> bool:
+    """True when an invariant/constraint tagged verify:<file> exists for the path."""
+    base = Path(file_path).name
+    try:
+        return totem_search_any(
+            [base], project_dir, types="invariant,constraint", tags=f"verify:{base}"
+        ) or totem_search_any(
+            [file_path], project_dir, types="invariant,constraint", tags=f"verify:{file_path}"
+        )
+    except Exception:
+        return False
+
+
 def has_memory_for(tool_name: str, tool_input: dict, project_dir: str) -> bool:
     """Dispatch the memory check per tool kind."""
     if tool_name in READ_TOOLS:
@@ -231,29 +266,50 @@ def cmd_pre(payload: dict) -> None:
 
     state = load_state(session_id)
 
-    # 1. Register calls clear their gate.
+    # 1. Register calls clear their own file's gate (parallel reads stay gated).
     if tool_name == REGISTER_READ:
-        state["pending_read"] = None
+        path = input_path(tool_input)
+        pending_verify = state.get("pending_verify", {})
+        if path and pending_verify.get(path):
+            tags = tool_input.get("tags") or []
+            if not any(str(tag).startswith("verify") for tag in tags):
+                deny(
+                    f"{path} has an invariant/constraint tagged verify. Record the "
+                    f"verification by calling register_file_read_tool with tags "
+                    f"including 'verify:{path}'."
+                )
+            pending_verify.pop(path, None)
+        if path:
+            state.get("pending_reads", {}).pop(path, None)
+        else:
+            state["pending_reads"] = {}
         save_state(session_id, state)
         allow()
     if tool_name == REGISTER_WRITE:
-        state["pending_write"] = None
+        path = input_path(tool_input)
+        if path:
+            state.get("pending_writes", {}).pop(path, None)
+        else:
+            state["pending_writes"] = {}
         save_state(session_id, state)
         allow()
 
-    # 2. Commit-gate: pending registration blocks all non-totem tools.
+    # 2. Commit-gate: pending registrations block all non-totem tools.
     if not tool_name.startswith(MCP_PREFIX):
-        if state.get("pending_read"):
+        pending_reads = state.get("pending_reads") or {}
+        if pending_reads:
+            files = ", ".join(sorted(pending_reads))
             deny(
-                f"You read {state['pending_read']}. You MUST call "
-                f"register_file_read_tool with what you learned before doing "
-                f"anything else (subject, kind, statement, tags)."
+                f"You read: {files}. You MUST call register_file_read_tool for "
+                f"each with what you learned before doing anything else "
+                f"(subject, kind, statement, tags)."
             )
-        if state.get("pending_write"):
+        pending_writes = state.get("pending_writes") or {}
+        if pending_writes:
+            files = ", ".join(sorted(pending_writes))
             deny(
-                f"You modified {state['pending_write']}. You MUST call "
-                f"register_file_write_tool documenting what changed and why "
-                f"before doing anything else."
+                f"You modified: {files}. You MUST call register_file_write_tool "
+                f"documenting what changed and why before doing anything else."
             )
 
     # 3. Memory gates for search/read tools.
@@ -295,10 +351,13 @@ def cmd_post(payload: dict) -> None:
         allow()
 
     state = load_state(session_id)
+    project_dir = payload.get("cwd", os.getcwd())
     if tool_name in READ_TOOLS:
-        state["pending_read"] = file_path
+        state.setdefault("pending_reads", {})[file_path] = True
+        if has_verify_memory(file_path, project_dir):
+            state.setdefault("pending_verify", {})[file_path] = True
     elif tool_name in WRITE_TOOLS:
-        state["pending_write"] = file_path
+        state.setdefault("pending_writes", {})[file_path] = True
     else:
         allow()
     save_state(session_id, state)
@@ -309,7 +368,15 @@ def cmd_clear(payload: dict) -> None:
     session_id = payload.get("session_id") or str(os.getppid())
     path = get_state_path(session_id)
     if path.exists():
-        save_state(session_id, {"searched": {}, "pending_read": None, "pending_write": None})
+        save_state(
+            session_id,
+            {
+                "searched": {},
+                "pending_reads": {},
+                "pending_writes": {},
+                "pending_verify": {},
+            },
+        )
     sys.exit(0)
 
 
