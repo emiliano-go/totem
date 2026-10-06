@@ -167,6 +167,13 @@ LABELS = {
     MemoryType.REJECTED_IDEA: "REJECTED IDEAS",
 }
 
+# Hard per-section caps so "emergency" sections cannot blow the token budget.
+MAX_CONFLICTS = 20
+MAX_AMBIGUITIES = 20
+MAX_STALE_WARNINGS = 30
+MAX_USER_ITEMS = 30
+MAX_STALE_ITEMS = 30
+
 
 def engineering_context(
     conn: turso.Connection,
@@ -299,6 +306,7 @@ def engineering_context(
                 ev.content_hash,
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
+                symbol_hash=ev.symbol_hash,
             ):
                 seen_warnings.add(key)
                 stale_warnings.append(
@@ -317,40 +325,57 @@ def engineering_context(
         if item.type in grouped:
             grouped[item.type.value].append(item)
 
-    # Build sections
-    sections: list[str] = []
+    # Build ordered blocks so the whole result can be hard-bounded. Essential
+    # blocks are always emitted (subject to the final hard trim); the rest are
+    # included only while they fit.
+    def _tok(text: str) -> int:
+        return max(1, len(text) // 4)
+
+    omitted_ids: list[str] = []
+    omitted = {
+        "conflicts": 0,
+        "ambiguities": 0,
+        "staleWarnings": 0,
+        "stale": 0,
+        "user": 0,
+        "items": 0,
+    }
+    blocks: list[dict] = []
+
+    def add_block(essential: bool, lines: list[str], ids: list[str]) -> None:
+        blocks.append({"essential": essential, "lines": lines, "ids": ids})
 
     # TASK
     if task:
-        sections.append(f"TASK: {task}")
+        add_block(True, [f"TASK: {task}"], [])
 
-    # USER CONTEXT: globally applicable owner memory, always shown first.
-    # Everything stored in the user DB counts as user scope by default.
-    user_items = [
-        item
-        for _, item in scored
-        if item.id in db_user_ids or scope_kind(item.scope) == "user"
-    ]
-    sections.append("\nUSER CONTEXT:")
-    if user_items:
-        for item in user_items:
-            sections.append(_serialize_item(item))
-    else:
-        sections.append("  (none)")
+    # USER CONTEXT (bounded)
+    user_lines = ["\nUSER CONTEXT:"]
+    kept_user = user_items[:MAX_USER_ITEMS]
+    omitted["user"] = max(0, len(user_items) - len(kept_user))
+    for item in kept_user:
+        user_lines.append(_serialize_item(item))
+    if omitted["user"]:
+        user_lines.append(f"  ... ({omitted['user']} more user items omitted)")
+    if not kept_user:
+        user_lines.append("  (none)")
+    add_block(True, user_lines, [i.id for i in kept_user])
 
-    sections.append("\nPROJECT CONTEXT:")
+    # BLOCKING AMBIGUITIES (bounded)
+    amb_lines = ["\nBLOCKING AMBIGUITIES:"]
+    kept_amb = blocking_ambiguities[:MAX_AMBIGUITIES]
+    omitted["ambiguities"] = max(0, len(blocking_ambiguities) - len(kept_amb))
+    for amb in kept_amb:
+        amb_lines.append(f"  [BLOCKING] {amb['title']}")
+        amb_lines.append(f"    Statement: {amb['statement']}")
+        amb_lines.append(f"    Impact: {amb['impact']}")
+    if omitted["ambiguities"]:
+        amb_lines.append(f"  ... ({omitted['ambiguities']} more blocking ambiguities omitted)")
+    if not kept_amb:
+        amb_lines.append("  (none)")
+    add_block(True, amb_lines, [a["id"] for a in kept_amb])
 
-    # BLOCKING AMBIGUITIES: always shown, never budget-truncated
-    if blocking_ambiguities:
-        sections.append("\nBLOCKING AMBIGUITIES:")
-        for amb in blocking_ambiguities:
-            sections.append(f"  [BLOCKING] {amb['title']}")
-            sections.append(f"    Statement: {amb['statement']}")
-            sections.append(f"    Impact: {amb['impact']}")
-    else:
-        sections.append("\nBLOCKING AMBIGUITIES: (none)")
-
-    # CONFLICTS: stored + explicit contradicts relations, never budget-truncated
+    # CONFLICTS: stored + explicit contradicts relations (bounded)
     relation_conflicts: list[str] = []
     by_id = {item.id: item for _, item in scored}
     selected_all = [item.id for _, item in scored] + [i.id for i in stale_items]
@@ -364,97 +389,85 @@ def engineering_context(
             f"  [relation] {(a.title if a else rel['from_id'])} contradicts "
             f"{(b.title if b else rel['to_id'])}"
         )
-    if stored_conflicts or relation_conflicts:
-        sections.append("\nCONTEXT CONFLICTS:")
-        for c in stored_conflicts:
-            sections.append(_serialize_conflict(c))
-        for line in relation_conflicts:
-            sections.append(line)
-    else:
-        sections.append("\nCONTEXT CONFLICTS: (none)")
+    conflict_lines = ["\nCONTEXT CONFLICTS:"]
+    kept_conf = stored_conflicts[:MAX_CONFLICTS]
+    omitted["conflicts"] = max(0, len(stored_conflicts) - len(kept_conf))
+    for c in kept_conf:
+        conflict_lines.append(_serialize_conflict(c))
+    remaining_conf = max(0, MAX_CONFLICTS - len(kept_conf))
+    conflict_lines.extend(relation_conflicts[:remaining_conf])
+    if omitted["conflicts"]:
+        conflict_lines.append(f"  ... ({omitted['conflicts']} more conflicts omitted)")
+    if not kept_conf and not relation_conflicts:
+        conflict_lines.append("  (none)")
+    add_block(True, conflict_lines, [])
 
-    # Budget: reserve fixed minimum for meta-sections
-    BUDGET_RESERVED_RATIO = 0.3
-    effective_budget = token_budget
-    if token_budget and token_budget > 0:
-        effective_budget = int(token_budget * (1.0 - BUDGET_RESERVED_RATIO))
-
-    # Token estimate: ~4 chars per token for English text
-    def _token_estimate(text: str) -> int:
-        return max(1, len(text) // 4)
-
-    token_count = 0
-    truncated = False
-    included_ids: set[str] = {a["id"] for a in blocking_ambiguities} | {
-        item.id for item in user_items
-    }
-    omitted_ids: list[str] = []
-
+    # Type sections (non-essential, budget-limited)
     for type_ in TYPE_ORDER:
-        # Ambiguities are split: blocking already shown above, non-blocking go here
         if type_ == MemoryType.AMBIGUITY:
             items_of_type = non_blocking_ambiguities
         else:
             items_of_type = grouped[type_.value]
         if not items_of_type:
             continue
-        label = LABELS[type_]
-        section_text = f"\n{label}:\n"
-        section_tokens = _token_estimate(section_text)
-        if effective_budget and token_count + section_tokens > effective_budget:
-            truncated = True
-            omitted_ids.extend(item.id for item in items_of_type)
-            sections.append(f"\n{label}: (truncated, budget exceeded)")
-            continue
-        sections.append(section_text)
-        token_count += section_tokens
-        for item in items_of_type:
-            item_text = _serialize_item(item)
-            item_tokens = _token_estimate(item_text)
-            if effective_budget and token_count + item_tokens > effective_budget:
-                truncated = True
-                sections.append(f"  ... ({len(items_of_type) - items_of_type.index(item)} items truncated)")
-                omitted_ids.extend(it.id for it in items_of_type[items_of_type.index(item):])
-                break
-            sections.append(item_text)
-            token_count += item_tokens
-            included_ids.add(item.id)
+        lines = [f"\n{LABELS[type_]}:"] + [_serialize_item(item) for item in items_of_type]
+        add_block(False, lines, [item.id for item in items_of_type])
 
-    # STALE WARNINGS: always shown, never budget-truncated
+    # STALE WARNINGS (bounded)
     if stale_warnings:
-        sections.append("\nSTALE KNOWLEDGE WARNINGS:")
-        for w in stale_warnings:
-            sections.append(f"  {w}")
+        w_lines = ["\nSTALE KNOWLEDGE WARNINGS:"]
+        kept_w = stale_warnings[:MAX_STALE_WARNINGS]
+        omitted["staleWarnings"] = len(stale_warnings) - len(kept_w)
+        w_lines.extend(f"  {w}" for w in kept_w)
+        if omitted["staleWarnings"]:
+            w_lines.append(f"  ... ({omitted['staleWarnings']} more warnings omitted)")
+        add_block(False, w_lines, [])
 
-    # STALE KNOWLEDGE: previously-trusted items whose evidence changed. High-risk
-    # classes (constraints/invariants/contracts/ambiguities) are always shown;
-    # the rest are budget-truncated last.
-    stale_ids: list[str] = []
+    # STALE KNOWLEDGE (bounded; high-risk classes first)
+    always = {
+        MemoryType.CONSTRAINT,
+        MemoryType.INVARIANT,
+        MemoryType.CONTRACT,
+        MemoryType.AMBIGUITY,
+    }
+    kept_stale: list = []
     if stale_items:
-        always = {
-            MemoryType.CONSTRAINT,
-            MemoryType.INVARIANT,
-            MemoryType.CONTRACT,
-            MemoryType.AMBIGUITY,
-        }
-        sections.append("\nSTALE KNOWLEDGE (verify before relying):")
-        omitted_stale = 0
-        for item in stale_items:
-            item_text = _serialize_item(item)
-            item_tokens = _token_estimate(item_text)
-            if (
-                item.type in always
-                or not effective_budget
-                or token_count + item_tokens <= effective_budget
-            ):
-                sections.append(item_text)
-                token_count += item_tokens
-                stale_ids.append(item.id)
-            else:
-                omitted_stale += 1
-        if omitted_stale:
-            sections.append(f"  ... ({omitted_stale} lower-priority stale items omitted)")
+        ordered = sorted(stale_items, key=lambda i: i.type not in always)
+        kept_stale = ordered[:MAX_STALE_ITEMS]
+        s_lines = ["\nSTALE KNOWLEDGE (verify before relying):"]
+        s_lines.extend(_serialize_item(item) for item in kept_stale)
+        omitted["stale"] = max(0, len(stale_items) - len(kept_stale))
+        if omitted["stale"]:
+            s_lines.append(f"  ... ({omitted['stale']} lower-priority stale items omitted)")
+        add_block(False, s_lines, [i.id for i in kept_stale])
 
+    # Assemble in order; token_budget is a HARD upper bound on the result.
+    budget = token_budget if (token_budget and token_budget > 0) else None
+    included_blocks: list[dict] = []
+    token_count = 0
+    for block in blocks:
+        block_tokens = sum(_tok(line) for line in block["lines"])
+        if block["essential"] or budget is None or token_count + block_tokens <= budget:
+            included_blocks.append(block)
+            token_count += block_tokens
+        else:
+            omitted["items"] += len(block["ids"])
+            omitted_ids.extend(block["ids"])
+
+    # If even the essential blocks exceed the budget, trim from the end (lowest
+    # priority) until within budget.
+    if budget is not None:
+        while included_blocks and token_count > budget:
+            dropped = included_blocks.pop()
+            token_count -= sum(_tok(line) for line in dropped["lines"])
+            omitted["items"] += len(dropped["ids"])
+            omitted_ids.extend(dropped["ids"])
+
+    sections: list[str] = []
+    included_ids: set[str] = set()
+    for block in included_blocks:
+        sections.extend(block["lines"])
+        included_ids.update(block["ids"])
     context = "\n".join(sections)
 
     selected_ids = [item.id for _, item in scored if item.id in included_ids]
@@ -463,8 +476,11 @@ def engineering_context(
         "context": context,
         "selectedIds": selected_ids,
         "omittedIds": omitted_ids,
-        "staleIds": stale_ids,
+        "staleIds": [i.id for i in kept_stale if i.id in included_ids],
         "conflicts": [c.model_dump(by_alias=True) for c in stored_conflicts],
         "relations": relations,
         "warnings": stale_warnings,
+        "budget": token_budget,
+        "estimatedTokens": token_count,
+        "omitted": omitted,
     }

@@ -11,6 +11,7 @@ import turso
 
 from .conflicts import detect_conflicts
 from .db import (
+    atomic,
     find_by_title,
     get_all_relations,
     get_history,
@@ -31,7 +32,7 @@ from .db import (
     soft_delete,
     update_item_row,
 )
-from .hashing import check_staleness, hash_content
+from .hashing import check_staleness, hash_content, hash_symbol
 from .models import (
     SCOPE_KINDS,
     Applicability,
@@ -42,6 +43,7 @@ from .models import (
     MemoryStatus,
     MemoryType,
     default_confidence,
+    validate_status_transition,
 )
 
 
@@ -68,6 +70,7 @@ def _normalize_tags(tags: list[str]) -> list[str]:
     return [t.strip().lower().replace(" ", "-") for t in tags if t.strip()]
 
 
+@atomic
 def memory_create(
     conn: turso.Connection,
     type: str,
@@ -248,6 +251,7 @@ def memory_get(
                 ev.content_hash,
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
+                symbol_hash=ev.symbol_hash,
             ):
                 stale_evidence.append(ev)
                 warnings.append(
@@ -270,6 +274,7 @@ def memory_get(
     return result
 
 
+@atomic
 def memory_update(
     conn: turso.Connection,
     id: str,
@@ -346,6 +351,31 @@ def memory_update(
         changes.append(("metadata", old_meta, json.dumps(metadata)))
         fields["metadata"] = json.dumps(metadata)
 
+    # Reconstruct the resulting item and validate it exactly like create/import
+    # do, so update cannot produce a state create would reject.
+    resulting = item.model_dump(by_alias=True)
+    if title is not None:
+        resulting["title"] = title
+    if statement is not None:
+        resulting["statement"] = statement
+    if details is not None:
+        resulting["details"] = details
+    if tags is not None:
+        resulting["tags"] = tags
+    if confidence is not None:
+        resulting["confidence"] = confidence
+    if importance is not None:
+        resulting["importance"] = importance
+    if evidence is not None:
+        resulting["evidence"] = [e.model_dump(by_alias=True) for e in parsed]
+    if metadata is not None:
+        resulting["metadata"] = metadata
+    if status is not None:
+        new_status = MemoryStatus(status)
+        validate_status_transition(item.status, new_status)
+        resulting["status"] = new_status
+    MemoryItem.model_validate(resulting)
+
     update_item_row(conn, id, fields)
     insert_history(conn, id, "updated", reason=reason)
     for field_name, old_val, new_val in changes:
@@ -354,6 +384,7 @@ def memory_update(
     return updated.model_dump(by_alias=True) if updated else None
 
 
+@atomic
 def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     """Soft-delete a memory item (§43 memory_delete). reason is required."""
     if not reason:
@@ -366,6 +397,7 @@ def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     return {"id": id, "status": "deleted"}
 
 
+@atomic
 def memory_relate(
     conn: turso.Connection,
     from_id: str,
@@ -423,6 +455,7 @@ def memory_recent(
     return memory_list(conn, sort="created_at", limit=limit)
 
 
+@atomic
 def resolve_conflict(
     conn: turso.Connection,
     conflict_id: str,
@@ -455,6 +488,7 @@ def memory_export(conn: turso.Connection) -> dict:
     }
 
 
+@atomic
 def memory_import(conn: turso.Connection, data: dict) -> dict:
     """Import an export dict; older formats are accepted and migrated."""
     if not isinstance(data, dict) or "items" not in data:
@@ -534,6 +568,7 @@ def memory_search(
                 ev.content_hash,
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
+                symbol_hash=ev.symbol_hash,
             ):
                 warnings.append(f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}")
         d = item.model_dump(by_alias=True)
@@ -552,6 +587,7 @@ def totem_init(project: str | None = None) -> dict:
     return init_project(project_dir)
 
 
+@atomic
 def register_file_read(
     conn: turso.Connection,
     path: str,
@@ -591,6 +627,7 @@ def register_file_read(
     content_hash = hash_content(range_content)
     blob_hash = hash_content(content)
     symbol = symbol or _guess_symbol(lines, actual_start)
+    symbol_hash = hash_symbol(file_path, symbol, text=content) if symbol else None
 
     # Search for the existing implementation memory for this (path, subject)
     existing = None
@@ -611,6 +648,7 @@ def register_file_read(
         kind="source",
         capturedAt=_now(),
         symbol=symbol,
+        symbolHash=symbol_hash,
         blobHash=blob_hash,
     )
 
@@ -647,6 +685,8 @@ def register_file_read(
         meta["blobHash"] = blob_hash
         if symbol:
             meta["symbol"] = symbol
+        if symbol_hash:
+            meta["symbolHash"] = symbol_hash
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
         insert_history(conn, existing.id, "updated", reason="register_file_read")
@@ -661,6 +701,7 @@ def register_file_read(
                 "contentHash": content_hash,
                 "blobHash": blob_hash,
                 "symbol": symbol,
+                "symbolHash": symbol_hash,
             },
         }
     else:
@@ -681,6 +722,7 @@ def register_file_read(
                 "contentHash": content_hash,
                 "blobHash": blob_hash,
                 **({"symbol": symbol} if symbol else {}),
+                **({"symbolHash": symbol_hash} if symbol_hash else {}),
             },
         )
         insert_item(conn, item)
@@ -696,10 +738,12 @@ def register_file_read(
                 "contentHash": content_hash,
                 "blobHash": blob_hash,
                 "symbol": symbol,
+                "symbolHash": symbol_hash,
             },
         }
 
 
+@atomic
 def register_file_write(
     conn: turso.Connection,
     path: str,
@@ -732,6 +776,7 @@ def register_file_write(
     range_content = "".join(lines[actual_start - 1 : actual_end])
     content_hash = hash_content(range_content)
     blob_hash = hash_content(content)
+    symbol_hash = hash_symbol(file_path, symbol, text=content) if symbol else None
 
     # Search for existing implementation memory with same path
     existing = None
@@ -752,6 +797,7 @@ def register_file_write(
         kind="source",
         capturedAt=_now(),
         symbol=symbol,
+        symbolHash=symbol_hash,
         blobHash=blob_hash,
     )
 
@@ -785,6 +831,8 @@ def register_file_write(
         meta["blobHash"] = blob_hash
         if symbol:
             meta["symbol"] = symbol
+        if symbol_hash:
+            meta["symbolHash"] = symbol_hash
         if start_line is not None:
             meta["startLine"] = actual_start
         if end_line is not None:
@@ -797,7 +845,7 @@ def register_file_write(
             "action": "updated",
             "statement": statement,
             "reason": reason,
-            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash, "symbolHash": symbol_hash},
         }
     else:
         # Create new
@@ -817,6 +865,7 @@ def register_file_write(
                 "contentHash": content_hash,
                 **({"startLine": actual_start} if start_line is not None else {}),
                 **({"endLine": actual_end} if end_line is not None else {}),
+                **({"symbolHash": symbol_hash} if symbol_hash else {}),
             },
         )
         insert_item(conn, item)
@@ -826,5 +875,5 @@ def register_file_write(
             "action": "created",
             "statement": statement,
             "reason": reason,
-            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash, "symbolHash": symbol_hash},
         }

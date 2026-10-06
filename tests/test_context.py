@@ -131,3 +131,29 @@ class TestEpistemicVisibility:
         assert "STALE KNOWLEDGE" in result["context"]
         assert "Evidence gotcha" in result["context"]
         assert item["id"] in result["staleIds"]
+
+
+def test_context_token_budget_is_a_hard_upper_bound(fresh_db):
+    for i in range(60):
+        memory_create(
+            fresh_db, type="gotcha", title=f"G{i}",
+            statement=f"fact {i} " + "x" * 200, tags=["t"],
+        )
+    result = engineering_context(fresh_db, tags=["t"], task="t", token_budget=200)
+    assert result["budget"] == 200
+    assert result["estimatedTokens"] <= 200
+    # the serialized context must not blow past the requested budget
+    assert len(result["context"]) // 4 <= 220
+    assert result["omitted"]["items"] > 0
+    assert result["omittedIds"]
+
+
+def test_context_without_budget_includes_everything(fresh_db):
+    for i in range(10):
+        memory_create(
+            fresh_db, type="gotcha", title=f"U{i}",
+            statement=f"note {i} " + "y" * 40, tags=["t"],
+        )
+    result = engineering_context(fresh_db, tags=["t"], task="t")
+    assert result["budget"] is None
+    assert "U0" in result["context"] and "U9" in result["context"]
