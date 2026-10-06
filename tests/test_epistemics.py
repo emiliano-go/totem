@@ -142,3 +142,23 @@ def test_statement_dedup_returns_existing(fresh_db):
 def test_short_statement_warning(fresh_db):
     result = memory_create(fresh_db, type="gotcha", title="Tiny", statement="x", tags=["t"])
     assert any("very short" in w for w in result.get("warnings", []))
+
+
+def test_user_db_items_render_as_user_context(fresh_db, tmp_path, monkeypatch):
+    """Everything in the user DB is user scope even without an explicit scope."""
+    import totem_mcp.context as context_mod
+    from totem_mcp.db import connect, init_db
+
+    user_path = tmp_path / "user.db"
+    user_conn = connect(db_path=user_path)
+    init_db(user_conn)
+    memory_create(
+        user_conn, type="gotcha", title="Owner habit",
+        statement="The owner prefers short answers.", tags=["owner"],
+    )
+    user_conn.close()
+
+    monkeypatch.setattr(context_mod, "get_user_db_path", lambda: user_path)
+    result = engineering_context(fresh_db, tags=[], task="anything")
+    assert "USER CONTEXT:" in result["context"]
+    assert "Owner habit" in result["context"]
