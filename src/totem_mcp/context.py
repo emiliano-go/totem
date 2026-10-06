@@ -210,10 +210,12 @@ def engineering_context(
         if item.id not in seen_ids:
             seen_ids.add(item.id)
             all_items.append(item)
+    db_user_ids: set[str] = set()
     for item in user_items:
         if item.id not in seen_ids:
             seen_ids.add(item.id)
             all_items.append(item)
+            db_user_ids.add(item.id)
 
     # Path activation: direct evidence matches plus one bounded relation hop;
     # semantic_candidates is an optional extra candidate source (embeddings).
@@ -308,8 +310,9 @@ def engineering_context(
 
     # Group by type for output ordering (user-scope items live in USER CONTEXT)
     grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
+    user_ids = {item.id for item in user_items}
     for _, item in scored:
-        if scope_kind(item.scope) == "user":
+        if item.id in user_ids:
             continue
         if item.type in grouped:
             grouped[item.type.value].append(item)
@@ -321,8 +324,13 @@ def engineering_context(
     if task:
         sections.append(f"TASK: {task}")
 
-    # USER CONTEXT: globally applicable owner memory, always shown first
-    user_items = [item for _, item in scored if scope_kind(item.scope) == "user"]
+    # USER CONTEXT: globally applicable owner memory, always shown first.
+    # Everything stored in the user DB counts as user scope by default.
+    user_items = [
+        item
+        for _, item in scored
+        if item.id in db_user_ids or scope_kind(item.scope) == "user"
+    ]
     sections.append("\nUSER CONTEXT:")
     if user_items:
         for item in user_items:
