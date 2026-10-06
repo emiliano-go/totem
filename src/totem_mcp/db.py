@@ -15,7 +15,7 @@ import turso
 
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS conflicts (
     created_at TEXT NOT NULL,
     resolved_at TEXT,
     resolution TEXT
+);
+"""
+
+CREATE_META = """
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -149,28 +156,58 @@ def db_connection(project: str | None = None):
         conn.close()
 
 
-def _is_schema_current(conn: turso.Connection) -> bool:
-    """Check if the schema is already at the current version by probing for the scope column."""
+def _has_column(conn: turso.Connection, table: str, name: str) -> bool:
     try:
         row = conn.execute(
-            "SELECT 1 FROM pragma_table_info('memory_items') WHERE name = 'scope'"
+            f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{name}'"
         ).fetchone()
         return row is not None
     except Exception:
         return False
 
 
+def _schema_version(conn: turso.Connection) -> int:
+    """Current schema version; legacy DBs are inferred from their columns."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+    except Exception:
+        pass
+    # DBs created before the meta table: scope marks v3, otherwise v1
+    return 3 if _has_column(conn, "memory_items", "scope") else 1
+
+
+def _set_schema_version(conn: turso.Connection, version: int) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        (str(version),),
+    )
+
+
 def init_db(conn: turso.Connection) -> None:
-    if _is_schema_current(conn):
-        return
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
     conn.executescript(CREATE_HISTORY)
-    _migrate_conflicts(conn)
-    _migrate_verified_commit(conn)
-    _migrate_scope(conn)
+    conn.executescript(CREATE_META)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: turso.Connection) -> None:
+    """Ordered migrations; a no-op (and no write) when already current."""
+    version = _schema_version(conn)
+    if version >= SCHEMA_VERSION:
+        return
+    if version < 2:
+        _migrate_conflicts(conn)
+    if version < 3:
+        _migrate_verified_commit(conn)
+        _migrate_scope(conn)
+    _set_schema_version(conn, SCHEMA_VERSION)
 
 
 def _migrate_conflicts(conn: turso.Connection) -> None:
@@ -491,41 +528,39 @@ def insert_conflict(conn: turso.Connection, conflict: Conflict) -> None:
     conn.commit()
 
 
+def _conflict_from_row(row) -> Conflict:
+    return Conflict(
+        itemA=row[CONFLICT_COL_IDX["item_a"]],
+        itemB=row[CONFLICT_COL_IDX["item_b"]],
+        claimA=row[CONFLICT_COL_IDX["claim_a"]],
+        claimB=row[CONFLICT_COL_IDX["claim_b"]],
+        condition=row[CONFLICT_COL_IDX["condition"]],
+        resolutionOptions=json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
+        recommended=row[CONFLICT_COL_IDX["recommended"]],
+    )
+
+
 def get_conflicts_for_item(conn: turso.Connection, item_id: str) -> list[Conflict]:
     """Retrieve all conflicts involving a given item."""
     rows = conn.execute(
         f"SELECT {CONFLICT_COLS} FROM conflicts WHERE item_a = ? OR item_b = ?",
         (item_id, item_id),
     ).fetchall()
-    return [
-        Conflict(
-            itemA=row[CONFLICT_COL_IDX["item_a"]],
-            itemB=row[CONFLICT_COL_IDX["item_b"]],
-            claimA=row[CONFLICT_COL_IDX["claim_a"]],
-            claimB=row[CONFLICT_COL_IDX["claim_b"]],
-            condition=row[CONFLICT_COL_IDX["condition"]],
-            resolutionOptions=json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
-            recommended=row[CONFLICT_COL_IDX["recommended"]],
-        )
-        for row in rows
-    ]
+    return [_conflict_from_row(row) for row in rows]
+
+
+def get_open_conflicts(conn: turso.Connection) -> list[Conflict]:
+    """Unresolved conflicts: what the context compiler should surface."""
+    rows = conn.execute(
+        f"SELECT {CONFLICT_COLS} FROM conflicts WHERE resolved_at IS NULL"
+    ).fetchall()
+    return [_conflict_from_row(row) for row in rows]
 
 
 def get_all_conflicts(conn: turso.Connection) -> list[Conflict]:
-    """Retrieve all stored conflicts."""
+    """All stored conflicts, including resolved ones (audit/export)."""
     rows = conn.execute(f"SELECT {CONFLICT_COLS} FROM conflicts").fetchall()
-    return [
-        Conflict(
-            itemA=row[CONFLICT_COL_IDX["item_a"]],
-            itemB=row[CONFLICT_COL_IDX["item_b"]],
-            claimA=row[CONFLICT_COL_IDX["claim_a"]],
-            claimB=row[CONFLICT_COL_IDX["claim_b"]],
-            condition=row[CONFLICT_COL_IDX["condition"]],
-            resolutionOptions=json.loads(row[CONFLICT_COL_IDX["resolution_options"]]),
-            recommended=row[CONFLICT_COL_IDX["recommended"]],
-        )
-        for row in rows
-    ]
+    return [_conflict_from_row(row) for row in rows]
 
 
 def resolve_conflict(

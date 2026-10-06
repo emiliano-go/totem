@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import turso
 
-from .db import get_all_conflicts, init_db, list_items, connect, get_user_db_path
+from .db import get_open_conflicts, init_db, list_items, connect, get_user_db_path
 from .hashing import check_staleness
 from .models import Conflict, MemoryStatus, MemoryType
 from pathlib import Path
@@ -156,17 +156,22 @@ def engineering_context(
             all_items.append(item)
 
     scored = []
+    stale_items: list = []
     for item in all_items:
         if types and item.type.value not in types:
             continue
         if item.status in _SKIP_STATUSES:
             continue
-        if item.status == MemoryStatus.POTENTIALLY_STALE and not include_stale:
-            continue
         # Filter by paths: only include items with evidence matching given paths
         if paths:
             item_paths = {ev.path for ev in item.evidence}
             if not item_paths.intersection(paths):
+                continue
+        if item.status == MemoryStatus.POTENTIALLY_STALE:
+            # Stale knowledge stays visible (in its own section) instead of
+            # silently disappearing from context.
+            stale_items.append(item)
+            if not include_stale:
                 continue
         score = _score_item(item, tags, task_words)
         scored.append((score, item))
@@ -191,17 +196,23 @@ def engineering_context(
             else:
                 non_blocking_ambiguities.append(item)
 
-    # Collect staleness warnings, never budget-truncated
+    # Collect staleness warnings over everything we considered, including items
+    # already flagged stale (they must not vanish without a trace).
     stale_warnings: list[str] = []
-    for _, item in scored:
+    seen_warnings: set[tuple] = set()
+    for item in [i for _, i in scored] + stale_items:
         for ev in item.evidence:
+            key = (item.id, ev.path, ev.start_line, ev.end_line)
+            if key in seen_warnings:
+                continue
             if check_staleness(Path(ev.path), ev.start_line, ev.end_line, ev.content_hash):
+                seen_warnings.add(key)
                 stale_warnings.append(
                     f"STALE: [{item.type.value}] {item.title}: {ev.path}:{ev.start_line}-{ev.end_line}"
                 )
 
-    # Load stored conflicts, never budget-truncated
-    stored_conflicts = get_all_conflicts(conn)
+    # Load unresolved conflicts, never budget-truncated
+    stored_conflicts = get_open_conflicts(conn)
 
     # Group by type for output ordering
     grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
@@ -285,6 +296,35 @@ def engineering_context(
         for w in stale_warnings:
             sections.append(f"  {w}")
 
+    # STALE KNOWLEDGE: previously-trusted items whose evidence changed. High-risk
+    # classes (constraints/invariants/contracts/ambiguities) are always shown;
+    # the rest are budget-truncated last.
+    stale_ids: list[str] = []
+    if stale_items:
+        always = {
+            MemoryType.CONSTRAINT,
+            MemoryType.INVARIANT,
+            MemoryType.CONTRACT,
+            MemoryType.AMBIGUITY,
+        }
+        sections.append("\nSTALE KNOWLEDGE (verify before relying):")
+        omitted_stale = 0
+        for item in stale_items:
+            item_text = _serialize_item(item)
+            item_tokens = _token_estimate(item_text)
+            if (
+                item.type in always
+                or not effective_budget
+                or token_count + item_tokens <= effective_budget
+            ):
+                sections.append(item_text)
+                token_count += item_tokens
+                stale_ids.append(item.id)
+            else:
+                omitted_stale += 1
+        if omitted_stale:
+            sections.append(f"  ... ({omitted_stale} lower-priority stale items omitted)")
+
     context = "\n".join(sections)
 
     selected_ids = [item.id for _, item in scored if item.id in included_ids]
@@ -293,6 +333,7 @@ def engineering_context(
         "context": context,
         "selectedIds": selected_ids,
         "omittedIds": omitted_ids,
+        "staleIds": stale_ids,
         "conflicts": [c.model_dump(by_alias=True) for c in stored_conflicts],
         "warnings": stale_warnings,
     }
