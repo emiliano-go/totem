@@ -13,6 +13,7 @@ from .conflicts import detect_conflicts
 from .db import (
     find_by_title,
     get_all_relations,
+    get_history,
     get_relations_for_item,
     get_all_conflicts,
     insert_relation,
@@ -396,6 +397,11 @@ def memory_relations(conn: turso.Connection, id: str) -> list[dict]:
     return get_relations_for_item(conn, id)
 
 
+def memory_history(conn: turso.Connection, id: str) -> list[dict]:
+    """The immutable timeline of one memory (created/updated/deleted events)."""
+    return get_history(conn, id)
+
+
 def memory_list(
     conn: turso.Connection,
     type: str | None = None,
@@ -426,28 +432,84 @@ def resolve_conflict(
     return db_resolve_conflict(conn, conflict_id, resolution)
 
 
+EXPORT_FORMAT_VERSION = 1
+
+
 def memory_export(conn: turso.Connection) -> dict:
-    """Export all memories and conflicts as a portable dict."""
+    """Export memories, conflicts, and relations as the archival format.
+
+    JSON is the portability boundary; the underlying DB is replaceable.
+    """
     from .db import SCHEMA_VERSION
 
     items = get_all_items(conn)
     conflicts = get_all_conflicts(conn)
+    relations = get_all_relations(conn)
     return {
+        "format_version": EXPORT_FORMAT_VERSION,
         "schema_version": SCHEMA_VERSION,
         "exported_at": _now(),
         "items": [item.model_dump(by_alias=True) for item in items],
         "conflicts": [c.model_dump(by_alias=True) for c in conflicts],
+        "relations": relations,
     }
 
 
 def memory_import(conn: turso.Connection, data: dict) -> dict:
-    """Import memories from an export dict. Skips duplicate IDs."""
+    """Import an export dict; older formats are accepted and migrated."""
+    if not isinstance(data, dict) or "items" not in data:
+        raise ValueError("invalid export: 'items' is required")
+    format_version = int(data.get("format_version") or 0)
+    if format_version > EXPORT_FORMAT_VERSION:
+        raise ValueError(
+            f"export format {format_version} is newer than supported "
+            f"{EXPORT_FORMAT_VERSION}; upgrade totem"
+        )
     items = data.get("items", [])
     result = db_import_items(conn, items)
+
+    known = {item.id for item in get_all_items(conn)}
+    existing_relations = {
+        (r["from_id"], r["to_id"], r["kind"]) for r in get_all_relations(conn)
+    }
+    imported_relations = 0
+    for rel in data.get("relations", []) if format_version >= 1 else []:
+        key = (rel.get("from_id"), rel.get("to_id"), rel.get("kind"))
+        if key in existing_relations or key[0] not in known or key[1] not in known:
+            continue
+        try:
+            insert_relation(conn, key[0], key[1], key[2])
+            existing_relations.add(key)
+            imported_relations += 1
+        except Exception:
+            continue
+
+    existing_conflicts = {
+        (c.item_a, c.item_b, c.claim_a, c.claim_b) for c in get_all_conflicts(conn)
+    }
+    imported_conflicts = 0
+    for raw in data.get("conflicts", []):
+        try:
+            conflict = Conflict.model_validate(raw)
+        except Exception:
+            continue
+        key = (conflict.item_a, conflict.item_b, conflict.claim_a, conflict.claim_b)
+        if key in existing_conflicts:
+            continue
+        try:
+            insert_conflict(conn, conflict)
+            existing_conflicts.add(key)
+            imported_conflicts += 1
+        except Exception:
+            continue
+
     return {
+        "format_version": format_version,
         "imported": result["imported"],
         "skipped": result["skipped"],
         "total_items": len(items),
+        "relations": imported_relations,
+        "conflicts": imported_conflicts,
     }
 
 

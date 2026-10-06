@@ -13,6 +13,7 @@ from .tools import (
     memory_delete,
     memory_export,
     memory_get,
+    memory_history,
     memory_import,
     memory_list,
     memory_recent,
@@ -304,6 +305,15 @@ def context(
             current_task=current_task,
         )
         click.echo(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("item_id")
+@click.pass_context
+def timeline(ctx: click.Context, item_id: str) -> None:
+    """Show the immutable timeline of a memory item."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_history(conn, item_id), indent=2))
 
 
 @cli.command()
