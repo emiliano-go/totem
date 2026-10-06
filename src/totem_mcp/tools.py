@@ -11,7 +11,10 @@ import turso
 from .conflicts import detect_conflicts
 from .db import (
     find_by_title,
+    get_all_relations,
+    get_relations_for_item,
     get_all_conflicts,
+    insert_relation,
     get_all_items,
     get_item,
     get_overlapping_items,
@@ -28,11 +31,15 @@ from .db import (
 )
 from .hashing import check_staleness, hash_content
 from .models import (
+    SCOPE_KINDS,
+    Applicability,
+    AssertedBy,
     Conflict,
     Evidence,
     MemoryItem,
     MemoryStatus,
     MemoryType,
+    default_confidence,
 )
 
 
@@ -52,21 +59,61 @@ def memory_create(
     statement: str,
     tags: list[str],
     details: str | None = None,
-    confidence: float = 1.0,
+    confidence: float | None = None,
     importance: float = 0.5,
     evidence: list[dict] | None = None,
     related_memory_ids: list[str] | None = None,
     metadata: dict | None = None,
+    asserted_by: str | None = None,
+    applicability: str | None = None,
+    scope: str | None = None,
+    supersedes_id: str | None = None,
 ) -> dict:
-    """Create a new memory item (§43 memory_create)."""
+    """Create a new memory item (§43 memory_create).
+
+    ``confidence`` defaults from provenance (asserted_by): user 1.0, test 0.95,
+    source/git/doc 0.9, runtime 0.7, agent 0.6; hypotheses cap at 0.4.
+    """
     if not type or not title or not statement:
         raise ValueError("type, title, and statement are required")
     if not tags:
         raise ValueError("At least one tag is required")
+    if importance is not None and not (0 <= importance <= 1):
+        raise ValueError("importance must in [0, 1]")
+
+    asserted_by = (asserted_by or AssertedBy.AGENT.value).strip().lower()
+    if asserted_by not in {e.value for e in AssertedBy}:
+        raise ValueError(
+            "asserted_by must be one of: " + ", ".join(e.value for e in AssertedBy)
+        )
+    if applicability is not None:
+        applicability = applicability.strip().lower()
+        if applicability not in {e.value for e in Applicability}:
+            raise ValueError(
+                "applicability must be one of: " + ", ".join(e.value for e in Applicability)
+            )
+    if confidence is None:
+        confidence = default_confidence(asserted_by)
+        if MemoryType(type) == MemoryType.HYPOTHESIS:
+            confidence = min(confidence, 0.4)
     if not (0 <= confidence <= 1):
         raise ValueError("confidence must be in [0, 1]")
-    if not (0 <= importance <= 1):
-        raise ValueError("importance must in [0, 1]")
+
+    if scope is not None:
+        scope = scope.strip()
+        if not scope:
+            scope = None
+        elif scope.startswith("{"):
+            try:
+                data = json.loads(scope)
+            except ValueError as exc:
+                raise ValueError(f"scope JSON is invalid: {exc}") from exc
+            if not isinstance(data, dict) or data.get("kind") not in SCOPE_KINDS:
+                raise ValueError(
+                    "scope JSON must be {'kind': one of " + ", ".join(SCOPE_KINDS) + "}"
+                )
+        elif scope not in SCOPE_KINDS:
+            raise ValueError("scope must be one of: " + ", ".join(SCOPE_KINDS))
 
     tags = _normalize_tags(tags)
     mem_type = MemoryType(type)
@@ -95,7 +142,16 @@ def memory_create(
         evidence=parsed_evidence,
         related_memory_ids=related_memory_ids or [],
         metadata=metadata,
+        asserted_by=asserted_by,
+        applicability=applicability,
+        scope=scope,
     )
+
+    superseded = None
+    if supersedes_id:
+        superseded = get_item(conn, supersedes_id)
+        if superseded is None:
+            raise ValueError(f"supersedes_id not found: {supersedes_id}")
 
     conflicts = detect_conflicts(conn, item)
 
@@ -110,6 +166,16 @@ def memory_create(
 
     insert_item(conn, item)
     insert_history(conn, item.id, "created")
+    if superseded is not None:
+        insert_relation(conn, item.id, superseded.id, "supersedes")
+        update_item_row(
+            conn,
+            superseded.id,
+            {"status": MemoryStatus.SUPERSEDED.value, "updated_at": _now()},
+        )
+        insert_history(
+            conn, superseded.id, "superseded", reason=f"superseded by {item.id}"
+        )
 
     warnings = []
     for c in conflicts:
@@ -259,6 +325,37 @@ def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     soft_delete(conn, id)
     insert_history(conn, id, "deleted", reason=reason)
     return {"id": id, "status": "deleted"}
+
+
+def memory_relate(
+    conn: turso.Connection,
+    from_id: str,
+    to_id: str,
+    kind: str,
+) -> dict:
+    """Create a typed relation between two memories (supersedes, contradicts,
+    invalidates, derived_from, verified_by, refines, depends_on)."""
+    if get_item(conn, from_id) is None:
+        raise ValueError(f"from_id not found: {from_id}")
+    if get_item(conn, to_id) is None:
+        raise ValueError(f"to_id not found: {to_id}")
+    relation = insert_relation(conn, from_id, to_id, kind)
+    if kind == "supersedes":
+        update_item_row(
+            conn, to_id, {"status": MemoryStatus.SUPERSEDED.value, "updated_at": _now()}
+        )
+        insert_history(conn, to_id, "superseded", reason=f"superseded by {from_id}")
+    elif kind == "invalidates":
+        update_item_row(
+            conn, to_id, {"status": MemoryStatus.INVALIDATED.value, "updated_at": _now()}
+        )
+        insert_history(conn, to_id, "invalidated", reason=f"invalidated by {from_id}")
+    return relation
+
+
+def memory_relations(conn: turso.Connection, id: str) -> list[dict]:
+    """All relations involving one memory."""
+    return get_relations_for_item(conn, id)
 
 
 def memory_list(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -9,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class MemoryType(str, Enum):
@@ -36,6 +37,60 @@ class MemoryStatus(str, Enum):
     DELETED = "deleted"
     RESOLVED = "resolved"
     SUPERSEDED = "superseded"
+
+
+class AssertedBy(str, Enum):
+    """Who/what established a claim; drives the default confidence."""
+
+    USER = "user"
+    TEST = "test"
+    SOURCE = "source"
+    GIT = "git"
+    DOC = "doc"
+    RUNTIME = "runtime"
+    AGENT = "agent"
+
+
+class Applicability(str, Enum):
+    """Whether a (possibly still true) claim still applies now."""
+
+    CURRENT = "current"
+    LEGACY = "legacy"
+    DEPRECATED = "deprecated"
+    PLANNED = "planned"
+
+
+SCOPE_KINDS = ("user", "project", "path", "task")
+
+# Provenance -> default confidence (used when the caller does not pass one).
+CONFIDENCE_BY_SOURCE = {
+    "user": 1.0,
+    "test": 0.95,
+    "source": 0.9,
+    "git": 0.9,
+    "doc": 0.9,
+    "runtime": 0.7,
+    "agent": 0.6,
+}
+
+
+def default_confidence(asserted_by: str | None) -> float:
+    return CONFIDENCE_BY_SOURCE.get((asserted_by or "agent").lower(), 0.6)
+
+
+def scope_kind(scope: str | None) -> str:
+    """Scope kind for scoring/grouping; tolerates legacy raw strings."""
+    if not scope:
+        return "project"
+    text = scope.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and data.get("kind") in SCOPE_KINDS:
+                return data["kind"]
+        except ValueError:
+            pass
+    return text if text in SCOPE_KINDS else "project"
 
 
 class EvidenceKind(str, Enum):
@@ -78,9 +133,11 @@ class MemoryItem(BaseModel):
     details: str | None = None
     tags: list[str] = Field(default_factory=list)
     status: MemoryStatus = MemoryStatus.ACTIVE
-    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.6)
     importance: float = Field(ge=0.0, le=1.0, default=0.5)
     scope: str | None = None
+    asserted_by: str | None = Field(default=None, alias="assertedBy")
+    applicability: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     related_memory_ids: list[str] = Field(
         default_factory=list, alias="relatedMemoryIds"
