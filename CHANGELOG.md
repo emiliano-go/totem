@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Memory model (epistemics)
+
+- **Provenance**: `memory_create` takes `asserted_by` (user/test/source/git/doc/runtime/agent); it drives a default `confidence` when none is given (user 1.0 … agent 0.6, hypotheses capped at 0.4).
+- **Semantic scope**: `user` / `project` / `path` / `task` (raw or JSON kind/value). Context groups USER CONTEXT → PROJECT CONTEXT and applies precedence in scoring; user items are no longer duplicated in the type sections. Items in the global user DB default to user scope.
+- **Relations**: new `memory_relations` table plus `memory_relate` / `memory_relations` tools and `supersedes_id`. `supersedes` / `invalidates` update the target's status and leave context; `contradicts` surfaces in CONTEXT CONFLICTS.
+- **Applicability**: `current` / `legacy` / `deprecated` / `planned`, orthogonal to status, shown in serialized context.
+- **Evidence**: `register_file_read` keys on `(path, subject)`, so a file can hold several facts and the same fact updates in place instead of one blob per path. Evidence gains `symbol` and `blobHash`; staleness prefers symbol presence (moved code is not stale), then whole-file blob equality, then the line range; symbols are auto-guessed from the nearest def/class when omitted.
+- **Density**: identical statements return the existing memory instead of duplicating; very short statements get a warning.
+- Path activation includes one bounded relation hop; `engineering_context` accepts a `semantic_candidates` hook (extra candidate source; deterministic scoring still ranks).
+
+### Context
+
+- `get_open_conflicts()` feeds `engineering_context`, so a resolved conflict no longer keeps resurfacing; `get_all_conflicts` remains for audit/export.
+- Potentially stale items are surfaced in a STALE KNOWLEDGE section (high-risk classes always shown, lower ones budget-truncated last) instead of silently vanishing; the staleness scan covers flagged items too; adds `staleIds`.
+
+### Enforcement hooks
+
+- Commit gates hold one pending entry per file (OpenCode plugin and Python hook); registering clears only its own path, so parallel reads each need registration. Legacy single-slot state migrates.
+- Reading a file with an invariant/constraint tagged `verify:<file>` requires the registration to carry a verify tag before other tools unblock.
+
+### Portability
+
+- `memory_export` is now the archival format: `format_version`, `schema_version`, `items`, `conflicts`, `relations`. `memory_import` accepts older formats, imports relations and conflicts with dedup, and refuses newer formats.
+- `memory_history` tool and `totem timeline <id>` expose the immutable history table for auditing why an agent believed something.
+
+### Database
+
+- Real schema versioning: a `meta` table with ordered migrations (SCHEMA_VERSION 4); legacy DBs are inferred from columns and stamped. No write when already current.
+- `TOTEM_USER_DB` overrides the user memory DB path (hosts that keep data in a volume point it at a persistent path; tests isolate it to a temp dir).
+
 ## 0.5.1
 
 ### Installer (`bin/totem.js`)
