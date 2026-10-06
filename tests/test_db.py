@@ -280,3 +280,61 @@ def test_memory_relate_rolls_back_on_failure(fresh_db, monkeypatch):
     with pytest.raises(RuntimeError):
         tools.memory_relate(fresh_db, a["id"], b["id"], "supersedes")
     assert get_all_relations(fresh_db) == []
+
+
+def _downgrade_to_v4(conn):
+    import totem_mcp.db as db
+
+    conn.execute("DROP INDEX IF EXISTS memory_relations_unique")
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4')"
+    )
+    conn.commit()
+    assert db._schema_version(conn) == 4
+
+
+def test_migration_failure_rolls_back_and_does_not_stamp(db_path, monkeypatch):
+    import totem_mcp.db as db
+
+    conn = connect(db_path=db_path)
+    init_db(conn)
+    _downgrade_to_v4(conn)
+
+    def boom(_conn):
+        raise RuntimeError("migration exploded")
+
+    monkeypatch.setattr(
+        db,
+        "MIGRATIONS",
+        [(2, db._migrate_conflicts), (3, db._migrate_v3),
+         (4, db._migrate_epistemics), (5, boom)],
+    )
+    with pytest.raises(RuntimeError):
+        db._migrate(conn)
+    # version unchanged and the v5 index was never created
+    assert db._schema_version(conn) == 4
+    assert not db._has_index(conn, "memory_relations_unique")
+    conn.close()
+
+
+def test_migration_postcondition_failure_does_not_stamp(db_path, monkeypatch):
+    import totem_mcp.db as db
+
+    conn = connect(db_path=db_path)
+    init_db(conn)
+    _downgrade_to_v4(conn)
+
+    def noop(_conn):
+        return None
+
+    # a migration that claims success but leaves the index missing must fail
+    monkeypatch.setattr(
+        db,
+        "MIGRATIONS",
+        [(2, db._migrate_conflicts), (3, db._migrate_v3),
+         (4, db._migrate_epistemics), (5, noop)],
+    )
+    with pytest.raises(RuntimeError):
+        db._migrate(conn)
+    assert db._schema_version(conn) == 4
+    conn.close()

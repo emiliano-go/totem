@@ -41,8 +41,8 @@ def test_export_import_round_trip(fresh_db, tmp_path):
     copy = connect(db_path=tmp_path / "copy.db")
     init_db(copy)
     result = memory_import(copy, export)
-    assert result["imported"] == 2
-    assert result["relations"] == 1
+    assert result["items_imported"] == 2
+    assert result["relations_imported"] == 1
 
     original = engineering_context(fresh_db, tags=["db"], task="storage")["context"]
     restored = engineering_context(copy, tags=["db"], task="storage")["context"]
@@ -57,8 +57,7 @@ def test_import_accepts_legacy_format(fresh_db, tmp_path):
     copy = connect(db_path=tmp_path / "legacy.db")
     init_db(copy)
     result = memory_import(copy, legacy)
-    assert result["format_version"] == 0
-    assert result["imported"] == 2
+    assert result["items_imported"] == 2
     copy.close()
 
 
@@ -84,3 +83,68 @@ def test_history_timeline(fresh_db):
     assert "created" in events and "updated" in events
     assert any(h["field"] == "statement" and h["new_value"] == "Corrected claim." for h in history)
     assert all(h["timestamp"] for h in history)
+
+
+def test_import_dry_run_does_not_mutate(fresh_db, tmp_path):
+    from totem_mcp.db import get_all_items
+
+    _seed(fresh_db)
+    export = memory_export(fresh_db)
+    copy = connect(db_path=tmp_path / "dry.db")
+    init_db(copy)
+    report = memory_import(copy, export, dry_run=True)
+    assert report["dry_run"] is True
+    assert report["items_imported"] == 2
+    assert report["relations_imported"] == 1
+    assert get_all_items(copy) == []
+    copy.close()
+
+
+def test_import_strict_aborts_on_invalid(tmp_path):
+    from totem_mcp.db import get_all_items
+
+    export = {
+        "format_version": 1,
+        "items": [
+            {"id": "x", "type": "gotcha", "title": "ok", "statement": "fine", "tags": ["t"]},
+            {"id": "y", "type": "invariant", "title": "bad", "statement": "no meta", "tags": ["t"]},
+        ],
+    }
+    copy = connect(db_path=tmp_path / "strict.db")
+    init_db(copy)
+    report = memory_import(copy, export, mode="strict")
+    assert report["aborted"] is True
+    assert report["items_imported"] == 0
+    assert report["errors"]
+    assert get_all_items(copy) == []  # nothing written
+    copy.close()
+
+
+def test_import_replace_clears_existing(fresh_db, tmp_path):
+    from totem_mcp.db import get_all_items
+
+    _seed(fresh_db)
+    export = memory_export(fresh_db)
+    copy = connect(db_path=tmp_path / "rep.db")
+    init_db(copy)
+    memory_import(copy, export)
+    assert len(get_all_items(copy)) == 2
+
+    report = memory_import(copy, {"format_version": 1, "items": []}, mode="replace")
+    assert report["items_imported"] == 0
+    assert get_all_items(copy) == []
+    copy.close()
+
+
+def test_import_normal_skips_invalid_and_reports(fresh_db):
+    export = {
+        "format_version": 1,
+        "items": [
+            {"id": "x", "type": "gotcha", "title": "ok", "statement": "fine", "tags": ["t"]},
+            {"id": "y", "type": "invariant", "title": "bad", "statement": "no meta", "tags": ["t"]},
+        ],
+    }
+    report = memory_import(fresh_db, export, mode="normal")
+    assert report["items_imported"] == 1
+    assert report["items_skipped"] == 1
+    assert any(e["section"] == "items" for e in report["errors"])

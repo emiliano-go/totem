@@ -28,7 +28,9 @@ def run_hook(sub: str, payload: dict) -> subprocess.CompletedProcess:
 
 def state_path(session_id: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in session_id)
-    return Path(tempfile.gettempdir()) / f"totem-hook-state-{safe}.json"
+    directory = Path(tempfile.gettempdir()) / "totem-hook-state"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{safe}.json"
 
 
 @pytest.fixture
@@ -132,3 +134,29 @@ def test_write_gate_and_legacy_state_migration(session_id):
         "session_id": session_id, "cwd": "/tmp",
     }))
     assert "modified" in blocked["permissionDecisionReason"].lower()
+
+
+def test_state_file_is_private(session_id):
+    run_hook("post", {
+        "tool_name": "Read", "tool_input": {"file_path": "/tmp/priv.py"},
+        "session_id": session_id, "cwd": "/tmp",
+    })
+    path = state_path(session_id)
+    assert path.exists()
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert path.parent.name == "totem-hook-state"
+    assert (path.parent.stat().st_mode & 0o777) == 0o700
+
+
+def test_state_write_is_atomic_and_valid_json(session_id):
+    for path in ("/tmp/x.py", "/tmp/y.py", "/tmp/z.py"):
+        run_hook("post", {
+            "tool_name": "Read", "tool_input": {"file_path": path},
+            "session_id": session_id, "cwd": "/tmp",
+        })
+    # the persisted state parses and holds all three gates (no torn writes)
+    state = json.loads(state_path(session_id).read_text())
+    assert {"/tmp/x.py", "/tmp/y.py", "/tmp/z.py"} <= set(state["pending_reads"])
+    # no leftover temp files in the state dir
+    leftovers = [p.name for p in state_path(session_id).parent.glob(".tmp-*")]
+    assert leftovers == []

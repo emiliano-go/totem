@@ -248,66 +248,61 @@ def atomic(fn):
     return wrapper
 
 
-def _migrate(conn: turso.Connection) -> None:
-    """Ordered migrations; a no-op (and no write) when already current."""
-    version = _schema_version(conn)
-    if version >= SCHEMA_VERSION:
-        return
-    if version < 2:
-        _migrate_conflicts(conn)
-    if version < 3:
-        _migrate_verified_commit(conn)
-        _migrate_scope(conn)
-    if version < 4:
-        _migrate_epistemics(conn)
-    if version < 5:
-        _migrate_relations(conn)
-    _set_schema_version(conn, SCHEMA_VERSION)
+def _columns(conn: turso.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r[1] for r in rows}
+
+
+def _has_index(conn: turso.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _add_columns(
+    conn: turso.Connection, table: str, columns: list[tuple[str, str]]
+) -> None:
+    """Add missing columns. Presence is checked so real failures surface."""
+    existing = _columns(conn, table)
+    for name, ddl in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def _migrate_conflicts(conn: turso.Connection) -> None:
-    """Add resolved_at/resolution columns to existing conflicts tables."""
-    for col in ("resolved_at TEXT", "resolution TEXT"):
-        try:
-            conn.execute(f"ALTER TABLE conflicts ADD COLUMN {col}")
-        except Exception:
-            pass  # column already exists
+    """v2: resolved_at/resolution columns on conflicts."""
+    _add_columns(
+        conn,
+        "conflicts",
+        [("resolved_at", "resolved_at TEXT"), ("resolution", "resolution TEXT")],
+    )
 
 
-def _migrate_verified_commit(conn: turso.Connection) -> None:
-    """Add verified_commit column to existing memory_items tables."""
-    try:
-        conn.execute("ALTER TABLE memory_items ADD COLUMN verified_commit TEXT")
-    except Exception:
-        pass  # column already exists
-
-
-def _migrate_scope(conn: turso.Connection) -> None:
-    """Add scope column to existing memory_items tables."""
-    try:
-        conn.execute("ALTER TABLE memory_items ADD COLUMN scope TEXT")
-    except Exception:
-        pass  # column already exists
+def _migrate_v3(conn: turso.Connection) -> None:
+    """v3: verified_commit and scope columns on memory_items."""
+    _add_columns(
+        conn,
+        "memory_items",
+        [("verified_commit", "verified_commit TEXT"), ("scope", "scope TEXT")],
+    )
 
 
 def _migrate_epistemics(conn: turso.Connection) -> None:
     """v4: provenance and applicability columns."""
-    for col in ("asserted_by TEXT", "applicability TEXT"):
-        try:
-            conn.execute(f"ALTER TABLE memory_items ADD COLUMN {col}")
-        except Exception:
-            pass  # column already exists
+    _add_columns(
+        conn,
+        "memory_items",
+        [("asserted_by", "asserted_by TEXT"), ("applicability", "applicability TEXT")],
+    )
 
 
 def _migrate_relations(conn: turso.Connection) -> None:
     """v5: dedupe relations, then add unique + lookup indexes."""
-    try:
-        conn.execute(
-            "DELETE FROM memory_relations WHERE id NOT IN "
-            "(SELECT MIN(id) FROM memory_relations GROUP BY from_id, to_id, kind)"
-        )
-    except Exception:
-        pass
+    conn.execute(
+        "DELETE FROM memory_relations WHERE id NOT IN "
+        "(SELECT MIN(id) FROM memory_relations GROUP BY from_id, to_id, kind)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations (from_id)"
     )
@@ -318,6 +313,66 @@ def _migrate_relations(conn: turso.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS memory_relations_unique "
         "ON memory_relations (from_id, to_id, kind)"
     )
+
+
+MIGRATIONS = [
+    (2, _migrate_conflicts),
+    (3, _migrate_v3),
+    (4, _migrate_epistemics),
+    (5, _migrate_relations),
+]
+
+
+def _verify_migration(conn: turso.Connection, target: int) -> None:
+    """Postcondition check; raises so a bad migration is never stamped."""
+    if target == 2:
+        missing = {"resolved_at", "resolution"} - _columns(conn, "conflicts")
+    elif target == 3:
+        missing = {"verified_commit", "scope"} - _columns(conn, "memory_items")
+    elif target == 4:
+        missing = {"asserted_by", "applicability"} - _columns(conn, "memory_items")
+    elif target == 5:
+        missing = (
+            set()
+            if _has_index(conn, "memory_relations_unique")
+            else {"memory_relations_unique"}
+        )
+    else:
+        missing = set()
+    if missing:
+        raise RuntimeError(
+            f"migration v{target} postcondition failed: missing {sorted(missing)}"
+        )
+
+
+def _migrate(conn: turso.Connection) -> None:
+    """Run ordered migrations under a write lock, atomically.
+
+    Commits only after every migration and its postcondition pass; on any
+    failure everything rolls back and the schema version is left unchanged, so
+    the next run retries cleanly. A no-op when already current.
+    """
+    version = _schema_version(conn)
+    if version >= SCHEMA_VERSION:
+        return
+    owns = not getattr(conn, "in_transaction", False)
+    if owns:
+        try:
+            conn.execute("BEGIN IMMEDIATE")  # cross-process write lock
+        except Exception:
+            conn.execute("BEGIN")
+    try:
+        for target, fn in MIGRATIONS:
+            if version < target:
+                fn(conn)
+                _verify_migration(conn, target)
+        _set_schema_version(conn, SCHEMA_VERSION)
+    except BaseException:
+        if owns:
+            conn.rollback()
+        raise
+    if owns:
+        conn.commit()
 
 
 COLUMNS = [

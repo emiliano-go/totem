@@ -12,6 +12,18 @@ from pydantic import BaseModel, Field, model_validator
 
 SCHEMA_VERSION = 5
 
+# Hard resource limits: an agent must not be able to persist an unbounded blob.
+LIMITS = {
+    "title": 500,
+    "statement": 20_000,
+    "details": 100_000,
+    "tags": 50,
+    "tag_len": 100,
+    "metadata_bytes": 64_000,
+    "evidence": 50,
+    "import_bytes": 50_000_000,
+}
+
 
 class MemoryType(str, Enum):
     DECISION = "decision"
@@ -301,6 +313,32 @@ class MemoryItem(BaseModel):
             if "path" not in meta:
                 msg = "Implementation items require 'path' in metadata"
                 raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_limits(self) -> MemoryItem:
+        if len(self.title) > LIMITS["title"]:
+            msg = f"title exceeds {LIMITS['title']} characters"
+            raise ValueError(msg)
+        if len(self.statement) > LIMITS["statement"]:
+            msg = f"statement exceeds {LIMITS['statement']} characters"
+            raise ValueError(msg)
+        if self.details and len(self.details) > LIMITS["details"]:
+            msg = f"details exceeds {LIMITS['details']} characters"
+            raise ValueError(msg)
+        if len(self.tags) > LIMITS["tags"]:
+            msg = f"too many tags ({len(self.tags)} > {LIMITS['tags']})"
+            raise ValueError(msg)
+        for tag in self.tags:
+            if len(tag) > LIMITS["tag_len"]:
+                msg = f"tag exceeds {LIMITS['tag_len']} characters: {tag[:40]}"
+                raise ValueError(msg)
+        if self.metadata is not None and len(json.dumps(self.metadata)) > LIMITS["metadata_bytes"]:
+            msg = f"metadata exceeds {LIMITS['metadata_bytes']} bytes"
+            raise ValueError(msg)
+        if len(self.evidence) > LIMITS["evidence"]:
+            msg = f"too many evidence entries ({len(self.evidence)} > {LIMITS['evidence']})"
+            raise ValueError(msg)
         return self
 
 
