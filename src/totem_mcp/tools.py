@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +46,20 @@ from .models import (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_SYMBOL_RE = re.compile(
+    r"^\s*(?:async\s+)?(?:def|class|function|func|fn|type)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def _guess_symbol(lines: list[str], start_line: int) -> str | None:
+    """Nearest enclosing def/class above the range; best-effort, language-light."""
+    for i in range(start_line - 1, max(-1, start_line - 200), -1):
+        match = _SYMBOL_RE.match(lines[i])
+        if match:
+            return match.group(1)
+    return None
 
 
 def _normalize_tags(tags: list[str]) -> list[str]:
@@ -208,7 +223,12 @@ def memory_get(
         stale_evidence = []
         for ev in item.evidence:
             if check_staleness(
-                Path(ev.path), ev.start_line, ev.end_line, ev.content_hash
+                Path(ev.path),
+                ev.start_line,
+                ev.end_line,
+                ev.content_hash,
+                symbol=ev.symbol,
+                blob_hash=ev.blob_hash,
             ):
                 stale_evidence.append(ev)
                 warnings.append(
@@ -427,7 +447,14 @@ def memory_search(
     for item in items:
         warnings: list[str] = []
         for ev in item.evidence:
-            if check_staleness(Path(ev.path), ev.start_line, ev.end_line, ev.content_hash):
+            if check_staleness(
+                Path(ev.path),
+                ev.start_line,
+                ev.end_line,
+                ev.content_hash,
+                symbol=ev.symbol,
+                blob_hash=ev.blob_hash,
+            ):
                 warnings.append(f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}")
         d = item.model_dump(by_alias=True)
         if warnings:
@@ -456,8 +483,14 @@ def register_file_read(
     end_line: int | None = None,
     title: str | None = None,
     details: str | None = None,
+    symbol: str | None = None,
 ) -> dict:
-    """Register facts learned from reading a file. Updates existing memory for same path, or creates new."""
+    """Register facts learned from reading a file.
+
+    Facts are keyed by (path, subject): the same file can hold several distinct
+    memories; the same fact updates in place. Evidence stores a whole-file blob
+    hash plus an optional symbol so moved code is not reported stale.
+    """
     file_path = Path(path)
     if not file_path.is_file():
         return {"error": f"File not found: {path}"}
@@ -476,15 +509,17 @@ def register_file_read(
 
     range_content = "".join(lines[actual_start - 1 : actual_end])
     content_hash = hash_content(range_content)
+    blob_hash = hash_content(content)
+    symbol = symbol or _guess_symbol(lines, actual_start)
 
-    # Search for existing implementation memory with same path
+    # Search for the existing implementation memory for this (path, subject)
     existing = None
     all_items = get_all_items(conn)
     for item in all_items:
         if item.type != MemoryType.IMPLEMENTATION:
             continue
         meta = item.metadata or {}
-        if meta.get("path") == path:
+        if meta.get("path") == path and meta.get("subject") == subject:
             existing = item
             break
 
@@ -495,10 +530,12 @@ def register_file_read(
         contentHash=content_hash,
         kind="source",
         capturedAt=_now(),
+        symbol=symbol,
+        blobHash=blob_hash,
     )
 
     if title is None:
-        title = f"File: {file_path.name}"
+        title = f"File: {file_path.name} — {subject}" if subject else f"File: {file_path.name}"
         title_provided = False
     else:
         title_provided = True
@@ -527,6 +564,9 @@ def register_file_read(
         if end_line is not None:
             meta["endLine"] = actual_end
         meta["contentHash"] = content_hash
+        meta["blobHash"] = blob_hash
+        if symbol:
+            meta["symbol"] = symbol
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
         insert_history(conn, existing.id, "updated", reason="register_file_read")
@@ -534,7 +574,14 @@ def register_file_read(
             "id": existing.id,
             "action": "updated",
             "statement": statement,
-            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+            "evidence": {
+                "path": path,
+                "startLine": actual_start,
+                "endLine": actual_end,
+                "contentHash": content_hash,
+                "blobHash": blob_hash,
+                "symbol": symbol,
+            },
         }
     else:
         # Create new
@@ -552,6 +599,8 @@ def register_file_read(
                 **({"startLine": actual_start} if start_line is not None else {}),
                 **({"endLine": actual_end} if end_line is not None else {}),
                 "contentHash": content_hash,
+                "blobHash": blob_hash,
+                **({"symbol": symbol} if symbol else {}),
             },
         )
         insert_item(conn, item)
@@ -560,7 +609,14 @@ def register_file_read(
             "id": item.id,
             "action": "created",
             "statement": statement,
-            "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash},
+            "evidence": {
+                "path": path,
+                "startLine": actual_start,
+                "endLine": actual_end,
+                "contentHash": content_hash,
+                "blobHash": blob_hash,
+                "symbol": symbol,
+            },
         }
 
 
@@ -574,6 +630,7 @@ def register_file_write(
     end_line: int | None = None,
     title: str | None = None,
     details: str | None = None,
+    symbol: str | None = None,
 ) -> dict:
     """Register a file write/modification. Updates existing memory for same path, or creates new."""
     file_path = Path(path)
@@ -594,6 +651,7 @@ def register_file_write(
 
     range_content = "".join(lines[actual_start - 1 : actual_end])
     content_hash = hash_content(range_content)
+    blob_hash = hash_content(content)
 
     # Search for existing implementation memory with same path
     existing = None
@@ -613,6 +671,8 @@ def register_file_write(
         contentHash=content_hash,
         kind="source",
         capturedAt=_now(),
+        symbol=symbol,
+        blobHash=blob_hash,
     )
 
     if title is None:
@@ -642,6 +702,9 @@ def register_file_write(
         meta["changeType"] = "write"
         meta["reason"] = reason
         meta["contentHash"] = content_hash
+        meta["blobHash"] = blob_hash
+        if symbol:
+            meta["symbol"] = symbol
         if start_line is not None:
             meta["startLine"] = actual_start
         if end_line is not None:

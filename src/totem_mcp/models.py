@@ -112,6 +112,8 @@ class Evidence(BaseModel):
     kind: EvidenceKind = EvidenceKind.SOURCE
     commit: str | None = None
     captured_at: str = Field(alias="capturedAt")
+    symbol: str | None = None
+    blob_hash: str | None = Field(default=None, alias="blobHash")
 
     model_config = {"populate_by_name": True}
 
