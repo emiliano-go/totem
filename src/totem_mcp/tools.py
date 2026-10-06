@@ -34,6 +34,7 @@ from .db import (
 )
 from .hashing import check_staleness, hash_content, hash_symbol
 from .models import (
+    LIMITS,
     SCOPE_KINDS,
     Applicability,
     AssertedBy,
@@ -489,62 +490,148 @@ def memory_export(conn: turso.Connection) -> dict:
 
 
 @atomic
-def memory_import(conn: turso.Connection, data: dict) -> dict:
-    """Import an export dict; older formats are accepted and migrated."""
+def memory_import(
+    conn: turso.Connection,
+    data: dict,
+    mode: str = "normal",
+    dry_run: bool = False,
+) -> dict:
+    """Import an export dict.
+
+    Modes: ``normal`` (skip invalid records, import the rest), ``strict``
+    (abort with no mutation if anything is invalid), ``replace`` (clear existing
+    data first, then import). ``dry_run`` validates and reports without writing.
+    Always returns a complete report with per-record errors.
+    """
+    if mode not in ("normal", "strict", "replace"):
+        raise ValueError("mode must be normal, strict, or replace")
     if not isinstance(data, dict) or "items" not in data:
         raise ValueError("invalid export: 'items' is required")
+    if len(json.dumps(data)) > LIMITS["import_bytes"]:
+        raise ValueError(f"import exceeds {LIMITS['import_bytes']} bytes")
     format_version = int(data.get("format_version") or 0)
     if format_version > EXPORT_FORMAT_VERSION:
         raise ValueError(
             f"export format {format_version} is newer than supported "
             f"{EXPORT_FORMAT_VERSION}; upgrade totem"
         )
-    items = data.get("items", [])
-    result = db_import_items(conn, items)
+
+    items_raw = data.get("items", [])
+    relations_raw = data.get("relations", []) if format_version >= 1 else []
+    conflicts_raw = data.get("conflicts", [])
+    errors: list[dict] = []
+
+    # Validation phase: parse everything before any mutation.
+    valid_items: list[MemoryItem] = []
+    for i, raw in enumerate(items_raw):
+        try:
+            valid_items.append(MemoryItem.model_validate(raw))
+        except Exception as e:
+            errors.append(
+                {"section": "items", "index": i, "id": (raw or {}).get("id"), "error": str(e)}
+            )
+
+    valid_relations: list[tuple[str, str, str]] = []
+    for i, raw in enumerate(relations_raw):
+        key = (raw.get("from_id"), raw.get("to_id"), raw.get("kind"))
+        if not all(key):
+            errors.append(
+                {"section": "relations", "index": i, "error": "from_id, to_id, kind required"}
+            )
+        else:
+            valid_relations.append(key)
+
+    valid_conflicts: list[Conflict] = []
+    for i, raw in enumerate(conflicts_raw):
+        try:
+            valid_conflicts.append(Conflict.model_validate(raw))
+        except Exception as e:
+            errors.append({"section": "conflicts", "index": i, "error": str(e)})
+
+    def _report(imported, skipped, r_imp, r_skip, c_imp, c_skip, aborted=False):
+        return {
+            "mode": mode,
+            "dry_run": dry_run,
+            "aborted": aborted,
+            "items_imported": imported,
+            "items_skipped": skipped,
+            "relations_imported": r_imp,
+            "relations_skipped": r_skip,
+            "conflicts_imported": c_imp,
+            "conflicts_skipped": c_skip,
+            "errors": errors,
+        }
+
+    if mode == "strict" and errors:
+        return _report(0, len(items_raw), 0, len(relations_raw), 0, len(conflicts_raw), aborted=True)
+
+    if dry_run:
+        return _report(
+            len(valid_items), len(items_raw) - len(valid_items),
+            len(valid_relations), len(relations_raw) - len(valid_relations),
+            len(valid_conflicts), len(conflicts_raw) - len(valid_conflicts),
+        )
+
+    if mode == "replace":
+        conn.execute("DELETE FROM memory_relations")
+        conn.execute("DELETE FROM conflicts")
+        conn.execute("DELETE FROM memory_history")
+        conn.execute("DELETE FROM memory_items")
+
+    # Apply items
+    existing_ids = {item.id for item in get_all_items(conn)}
+    items_imported = 0
+    items_skipped = len(items_raw) - len(valid_items)
+    for item in valid_items:
+        if item.id in existing_ids:
+            items_skipped += 1
+            continue
+        insert_item(conn, item)
+        insert_history(conn, item.id, "created", reason="import")
+        existing_ids.add(item.id)
+        items_imported += 1
 
     known = {item.id for item in get_all_items(conn)}
     existing_relations = {
         (r["from_id"], r["to_id"], r["kind"]) for r in get_all_relations(conn)
     }
-    imported_relations = 0
-    for rel in data.get("relations", []) if format_version >= 1 else []:
-        key = (rel.get("from_id"), rel.get("to_id"), rel.get("kind"))
+    relations_imported = 0
+    relations_skipped = len(relations_raw) - len(valid_relations)
+    for key in valid_relations:
         if key in existing_relations or key[0] not in known or key[1] not in known:
+            relations_skipped += 1
             continue
         try:
             insert_relation(conn, key[0], key[1], key[2])
             existing_relations.add(key)
-            imported_relations += 1
-        except Exception:
-            continue
+            relations_imported += 1
+        except Exception as e:
+            relations_skipped += 1
+            errors.append({"section": "relations", "error": str(e)})
 
     existing_conflicts = {
         (c.item_a, c.item_b, c.claim_a, c.claim_b) for c in get_all_conflicts(conn)
     }
-    imported_conflicts = 0
-    for raw in data.get("conflicts", []):
-        try:
-            conflict = Conflict.model_validate(raw)
-        except Exception:
-            continue
+    conflicts_imported = 0
+    conflicts_skipped = len(conflicts_raw) - len(valid_conflicts)
+    for conflict in valid_conflicts:
         key = (conflict.item_a, conflict.item_b, conflict.claim_a, conflict.claim_b)
         if key in existing_conflicts:
+            conflicts_skipped += 1
             continue
         try:
             insert_conflict(conn, conflict)
             existing_conflicts.add(key)
-            imported_conflicts += 1
-        except Exception:
-            continue
+            conflicts_imported += 1
+        except Exception as e:
+            conflicts_skipped += 1
+            errors.append({"section": "conflicts", "error": str(e)})
 
-    return {
-        "format_version": format_version,
-        "imported": result["imported"],
-        "skipped": result["skipped"],
-        "total_items": len(items),
-        "relations": imported_relations,
-        "conflicts": imported_conflicts,
-    }
+    return _report(
+        items_imported, items_skipped,
+        relations_imported, relations_skipped,
+        conflicts_imported, conflicts_skipped,
+    )
 
 
 def memory_search(

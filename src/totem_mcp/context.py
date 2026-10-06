@@ -173,6 +173,7 @@ MAX_AMBIGUITIES = 20
 MAX_STALE_WARNINGS = 30
 MAX_USER_ITEMS = 30
 MAX_STALE_ITEMS = 30
+MAX_TOKEN_BUDGET = 50_000
 
 
 def engineering_context(
@@ -193,6 +194,8 @@ def engineering_context(
     Searches both project DB and user DB (~/.local/share/totem/).
     Project items take precedence on ID collision.
     """
+    if token_budget and token_budget > MAX_TOKEN_BUDGET:
+        token_budget = MAX_TOKEN_BUDGET
     task_words = set(current_task.lower().split()) if current_task else None
     project_items = list_items(conn, tags=tags, limit=200)
 

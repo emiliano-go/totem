@@ -332,15 +332,25 @@ def export(ctx: click.Context, output: str | None) -> None:
             click.echo(data)
 
 
-@cli.command()
+@cli.command(name="import")
 @click.argument("file", type=click.Path(exists=True))
+@click.option("--dry-run", is_flag=True, help="Validate and report without writing")
+@click.option("--strict", "mode", flag_value="strict", help="Abort with no changes if any record is invalid")
+@click.option("--replace", "mode", flag_value="replace", help="Clear existing data before importing")
+@click.option("--normal", "mode", flag_value="normal", default=True, help="Skip invalid records (default)")
 @click.pass_context
-def import_cmd(ctx: click.Context, file: str) -> None:
+def import_cmd(ctx: click.Context, file: str, mode: str, dry_run: bool) -> None:
     """Import memories from a JSON export file."""
     from pathlib import Path
-    data = json.loads(Path(file).read_text())
+
+    from .models import LIMITS
+
+    path = Path(file)
+    if path.stat().st_size > LIMITS["import_bytes"]:
+        raise click.ClickException(f"file exceeds {LIMITS['import_bytes']} bytes")
+    data = json.loads(path.read_text())
     with db_connection(project=ctx.obj.get("project")) as conn:
-        result = memory_import(conn, data)
+        result = memory_import(conn, data, mode=mode, dry_run=dry_run)
         click.echo(json.dumps(result, indent=2))
 
 

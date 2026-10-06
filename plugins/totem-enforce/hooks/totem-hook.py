@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -63,7 +64,37 @@ def input_path(tool_input: dict) -> str:
 def get_state_path(session_id: str) -> Path:
     # Sanitize: session_id comes from the hook payload; keep the filename safe.
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
-    return Path(tempfile.gettempdir()) / f"totem-hook-state-{safe}.json"
+    return get_state_dir() / f"{safe}.json"
+
+
+STATE_DIR_NAME = "totem-hook-state"
+STATE_TTL_SECONDS = 24 * 3600
+
+
+def get_state_dir() -> Path:
+    """Private (0700) per-user directory for hook state."""
+    path = Path(tempfile.gettempdir()) / STATE_DIR_NAME
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _cleanup_state_dir() -> None:
+    """Best-effort TTL sweep so long-dead sessions do not accumulate."""
+    now = time.time()
+    try:
+        entries = list(get_state_dir().iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and now - entry.stat().st_mtime > STATE_TTL_SECONDS:
+                entry.unlink()
+        except OSError:
+            continue
 
 
 def _normalize_state(state: dict) -> dict:
@@ -86,6 +117,7 @@ def _normalize_state(state: dict) -> dict:
 
 
 def load_state(session_id: str) -> dict:
+    _cleanup_state_dir()
     path = get_state_path(session_id)
     if path.exists():
         try:
@@ -96,10 +128,24 @@ def load_state(session_id: str) -> dict:
 
 
 def save_state(session_id: str, state: dict) -> None:
+    """Atomically persist state: temp file + fsync + rename, mode 0600."""
+    path = get_state_path(session_id)
     try:
-        get_state_path(session_id).write_text(json.dumps(state))
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=".json")
     except OSError:
-        pass
+        return
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(state))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -111,7 +157,11 @@ def hook_lock(session_id: str):
     open (allows the tool) instead of queueing behind an in-flight search.
     """
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
-    lock = open(Path(tempfile.gettempdir()) / f"totem-hook-lock-{safe}", "w")
+    lock = open(get_state_dir() / f".lock-{safe}", "w")
+    try:
+        os.chmod(lock.name, 0o600)
+    except OSError:
+        pass
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

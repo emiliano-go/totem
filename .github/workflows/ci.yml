@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --python ${{ matrix.python }} --dev
+
+      - name: Tests
+        run: uv run --python ${{ matrix.python }} pytest -q
+
+      - name: CLI smoke test
+        run: |
+          uv run --python ${{ matrix.python }} totem --version
+          uv run --python ${{ matrix.python }} totem --help >/dev/null
+
+      - name: MCP server startup
+        run: |
+          uv run --python ${{ matrix.python }} python - <<'PY'
+          import asyncio
+          from totem_mcp.server import mcp
+
+          tools = asyncio.run(mcp.list_tools())
+          assert tools, "MCP server exposes no tools"
+          print(f"MCP server exposes {len(tools)} tools")
+          PY
+
+      - name: Build artifacts
+        run: uv build
+
+  npm:
+    name: npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm install
+        working-directory: plugins/totem-enforce
+
+      - name: Syntax check plugin
+        run: node --check .opencode/plugins/totem-enforce.js
+        working-directory: plugins/totem-enforce
+
+      - name: Package dry-run
+        run: npm pack --dry-run
+        working-directory: plugins/totem-enforce

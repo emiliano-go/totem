@@ -226,3 +226,32 @@ def test_relation_constraints(fresh_db):
     memory_relate(fresh_db, a["id"], b["id"], "supersedes")
     with pytest.raises(ValueError):
         memory_relate(fresh_db, b["id"], a["id"], "supersedes")
+
+
+def test_resource_limits_reject_oversized(fresh_db):
+    from totem_mcp.models import LIMITS
+
+    with pytest.raises(ValueError):
+        memory_create(
+            fresh_db, type="gotcha", title="x" * (LIMITS["title"] + 1),
+            statement="s", tags=["t"],
+        )
+    with pytest.raises(ValueError):
+        memory_create(
+            fresh_db, type="gotcha", title="ok", statement="s",
+            tags=[f"t{i}" for i in range(LIMITS["tags"] + 1)],
+        )
+    with pytest.raises(ValueError):
+        memory_create(
+            fresh_db, type="gotcha", title="ok", statement="s", tags=["t"],
+            metadata={"blob": "x" * (LIMITS["metadata_bytes"] + 1)},
+        )
+
+
+def test_import_size_limit(fresh_db, monkeypatch):
+    from totem_mcp.models import LIMITS
+    from totem_mcp.tools import memory_import
+
+    monkeypatch.setitem(LIMITS, "import_bytes", 10)
+    with pytest.raises(ValueError):
+        memory_import(fresh_db, {"items": [], "padding": "0123456789"})

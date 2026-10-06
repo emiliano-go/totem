@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from .context import engineering_context
 from .db import db_connection
 from .db import list_task_items, list_command_items
+from .errors import error_response, not_found
 from .tools import (
     memory_create,
     memory_history,
@@ -43,7 +44,7 @@ def totem_init_tool(project: str | None = None) -> str:
         result = totem_init(project=project)
         return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Error: {e}"
+        return error_response(e)
 
 
 @mcp.tool()
@@ -104,7 +105,7 @@ def memory_create_tool(
             )
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -126,7 +127,7 @@ def memory_relate_tool(
         try:
             return json.dumps(memory_relate(conn, from_id, to_id, kind), indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -136,7 +137,7 @@ def memory_relations_tool(id: str, project: str | None = None) -> str:
         try:
             return json.dumps(memory_relations(conn, id), indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -146,7 +147,7 @@ def memory_history_tool(id: str, project: str | None = None) -> str:
         try:
             return json.dumps(memory_history(conn, id), indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -162,10 +163,10 @@ def memory_get_tool(id: str, include_evidence: bool = True, project: str | None 
         with db_connection(project=project) as conn:
             result = memory_get(conn, id, include_evidence=include_evidence)
             if result is None:
-                return f"Error: Item {id} not found"
+                return not_found(f"Item {id} not found")
             return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Error: {e}"
+        return error_response(e)
 
 
 @mcp.tool()
@@ -216,10 +217,10 @@ def memory_update_tool(
                 metadata=metadata,
             )
             if result is None:
-                return f"Error: Item {id} not found"
+                return not_found(f"Item {id} not found")
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -236,7 +237,7 @@ def memory_delete_tool(id: str, reason: str, project: str | None = None) -> str:
             result = memory_delete(conn, id, reason)
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -263,7 +264,7 @@ def memory_list_tool(
             result = memory_list(conn, type=type, tags=tags, status=status, sort=sort or "updated_at", limit=limit)
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -279,7 +280,7 @@ def memory_recent_tool(limit: int = 5, project: str | None = None) -> str:
             result = memory_recent(conn, limit=limit)
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -295,7 +296,7 @@ def memory_tasks_tool(limit: int = 10, project: str | None = None) -> str:
             items = list_task_items(conn, limit=limit)
             return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -311,7 +312,7 @@ def memory_commands_tool(limit: int = 20, project: str | None = None) -> str:
             items = list_command_items(conn, limit=limit)
             return json.dumps([item.model_dump(by_alias=True) for item in items], indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -327,10 +328,10 @@ def resolve_conflict_tool(conflict_id: str, resolution: str, project: str | None
         try:
             result = resolve_conflict(conn, conflict_id, resolution)
             if result is None:
-                return f"Error: Conflict {conflict_id} not found"
+                return not_found(f"Conflict {conflict_id} not found")
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -364,7 +365,7 @@ def memory_search_tool(
             )
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -407,7 +408,7 @@ def engineering_context_tool(
             )
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -422,7 +423,7 @@ def memory_export_tool(project: str | None = None) -> str:
             result = memory_export(conn)
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -438,7 +439,7 @@ def memory_import_tool(data: dict[str, Any], project: str | None = None) -> str:
             result = memory_import(conn, data)
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -490,7 +491,7 @@ def register_file_read_tool(
             )
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 @mcp.tool()
@@ -539,7 +540,7 @@ def register_file_write_tool(
             )
             return json.dumps(result, indent=2)
         except Exception as e:
-            return f"Error: {e}"
+            return error_response(e)
 
 
 # --- Typed wrapper tools ---
@@ -558,7 +559,7 @@ def _createTyped(type_: str, title: str, statement: str, tags: list[str],
                                    related_memory_ids=related_memory_ids, metadata=metadata)
             return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Error: {e}"
+        return error_response(e)
 
 
 @mcp.tool()
