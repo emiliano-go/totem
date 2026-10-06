@@ -12,6 +12,7 @@ from .db import db_connection
 from .db import list_task_items, list_command_items
 from .tools import (
     memory_create,
+    memory_history,
     memory_relate,
     memory_relations,
     memory_delete,
@@ -134,6 +135,16 @@ def memory_relations_tool(id: str, project: str | None = None) -> str:
     with db_connection(project=project) as conn:
         try:
             return json.dumps(memory_relations(conn, id), indent=2)
+        except Exception as e:
+            return f"Error: {e}"
+
+
+@mcp.tool()
+def memory_history_tool(id: str, project: str | None = None) -> str:
+    """Show the immutable timeline of a memory: created, updated fields, deleted."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_history(conn, id), indent=2)
         except Exception as e:
             return f"Error: {e}"
 

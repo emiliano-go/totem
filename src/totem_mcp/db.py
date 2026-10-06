@@ -818,3 +818,25 @@ def get_all_relations(conn: turso.Connection) -> list[dict]:
         "SELECT id, from_id, to_id, kind, created_at FROM memory_relations"
     ).fetchall()
     return [_relation_from_row(r) for r in rows]
+
+
+def get_history(conn: turso.Connection, item_id: str) -> list[dict]:
+    """Immutable history events for one memory, oldest first."""
+    rows = conn.execute(
+        "SELECT id, item_id, event, field, old_value, new_value, reason, timestamp "
+        "FROM memory_history WHERE item_id = ? ORDER BY timestamp, id",
+        (item_id,),
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "item_id": r[1],
+            "event": r[2],
+            "field": r[3],
+            "old_value": r[4],
+            "new_value": r[5],
+            "reason": r[6],
+            "timestamp": r[7],
+        }
+        for r in rows
+    ]
