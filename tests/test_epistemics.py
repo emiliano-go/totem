@@ -118,10 +118,12 @@ def test_contradicts_relation_surfaces_in_context(fresh_db):
 
 def test_invalidates_marks_target(fresh_db):
     old = memory_create(
-        fresh_db, type="gotcha", title="Old gotcha", statement="S", tags=["t"]
+        fresh_db, type="gotcha", title="Old gotcha",
+        statement="The old claim, now obsolete.", tags=["t"],
     )
     new = memory_create(
-        fresh_db, type="gotcha", title="New gotcha", statement="S", tags=["t"]
+        fresh_db, type="gotcha", title="New gotcha",
+        statement="The new claim that replaces it.", tags=["t"],
     )
     memory_relate(fresh_db, new["id"], old["id"], "invalidates")
     result = engineering_context(fresh_db, tags=["t"], task="t")
@@ -162,3 +164,65 @@ def test_user_db_items_render_as_user_context(fresh_db, tmp_path, monkeypatch):
     result = engineering_context(fresh_db, tags=[], task="anything")
     assert "USER CONTEXT:" in result["context"]
     assert "Owner habit" in result["context"]
+
+
+def test_update_revalidates_type_invariants(fresh_db):
+    from totem_mcp.tools import memory_update
+
+    item = memory_create(
+        fresh_db, type="invariant", title="Inv", statement="S", tags=["x"],
+        metadata={"verificationMethod": "test", "condition": "c"},
+    )
+    # dropping required metadata must be rejected, like create would
+    with pytest.raises(Exception):
+        memory_update(fresh_db, item["id"], metadata={"note": "oops"})
+    stored = get_item(fresh_db, item["id"])
+    assert stored.metadata.get("verificationMethod") == "test"
+
+
+def test_status_lifecycle_rejects_illegal_transition(fresh_db):
+    from totem_mcp.models import MemoryStatus
+    from totem_mcp.tools import memory_update
+
+    item = memory_create(fresh_db, type="gotcha", title="G", statement="S", tags=["x"])
+
+    # valid: active -> potentially_stale
+    memory_update(fresh_db, item["id"], status="potentially_stale")
+    assert get_item(fresh_db, item["id"]).status == MemoryStatus.POTENTIALLY_STALE
+
+    # valid: potentially_stale -> invalidated
+    memory_update(fresh_db, item["id"], status="invalidated")
+
+    # illegal: invalidated -> active (terminal states may only be deleted)
+    with pytest.raises(ValueError):
+        memory_update(fresh_db, item["id"], status="active")
+
+    # illegal: unknown status value
+    with pytest.raises(ValueError):
+        memory_update(fresh_db, item["id"], status="nonsense")
+
+
+def test_relation_constraints(fresh_db):
+    from totem_mcp.db import get_all_relations
+
+    a = memory_create(fresh_db, type="gotcha", title="A", statement="claim A", tags=["t"])
+    b = memory_create(fresh_db, type="gotcha", title="B", statement="claim B", tags=["t"])
+
+    # duplicate is idempotent: same relation, no error, no duplicate row
+    r1 = memory_relate(fresh_db, a["id"], b["id"], "depends_on")
+    r2 = memory_relate(fresh_db, a["id"], b["id"], "depends_on")
+    assert r1["id"] == r2["id"]
+    assert len([r for r in get_all_relations(fresh_db) if r["kind"] == "depends_on"]) == 1
+
+    # self-relation rejected
+    with pytest.raises(ValueError):
+        memory_relate(fresh_db, a["id"], a["id"], "depends_on")
+
+    # dangling endpoint rejected
+    with pytest.raises(ValueError):
+        memory_relate(fresh_db, a["id"], "no-such-id", "depends_on")
+
+    # cycle rejected for state-changing relations
+    memory_relate(fresh_db, a["id"], b["id"], "supersedes")
+    with pytest.raises(ValueError):
+        memory_relate(fresh_db, b["id"], a["id"], "supersedes")

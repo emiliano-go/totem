@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class MemoryType(str, Enum):
@@ -113,6 +113,7 @@ class Evidence(BaseModel):
     commit: str | None = None
     captured_at: str = Field(alias="capturedAt")
     symbol: str | None = None
+    symbol_hash: str | None = Field(default=None, alias="symbolHash")
     blob_hash: str | None = Field(default=None, alias="blobHash")
 
     model_config = {"populate_by_name": True}
@@ -125,6 +126,39 @@ _BUG_TRANSITIONS = {
     "fixed": {"verified"},
     "verified": set(),
 }
+
+# Memory lifecycle: active <-> potentially_stale -> {invalidated, superseded,
+# resolved} -> deleted. Terminal states (invalidated/superseded/resolved) may
+# only be deleted; deleted is final.
+_STATUS_TRANSITIONS = {
+    MemoryStatus.ACTIVE: {
+        MemoryStatus.POTENTIALLY_STALE,
+        MemoryStatus.INVALIDATED,
+        MemoryStatus.SUPERSEDED,
+        MemoryStatus.RESOLVED,
+        MemoryStatus.DELETED,
+    },
+    MemoryStatus.POTENTIALLY_STALE: {
+        MemoryStatus.ACTIVE,
+        MemoryStatus.INVALIDATED,
+        MemoryStatus.SUPERSEDED,
+        MemoryStatus.RESOLVED,
+        MemoryStatus.DELETED,
+    },
+    MemoryStatus.INVALIDATED: {MemoryStatus.DELETED},
+    MemoryStatus.SUPERSEDED: {MemoryStatus.DELETED},
+    MemoryStatus.RESOLVED: {MemoryStatus.DELETED},
+    MemoryStatus.DELETED: set(),
+}
+
+
+def validate_status_transition(old: MemoryStatus, new: MemoryStatus) -> None:
+    """Reject illegal memory lifecycle transitions."""
+    if old == new:
+        return
+    if new not in _STATUS_TRANSITIONS.get(old, set()):
+        msg = f"status transition '{old.value}' -> '{new.value}' is not allowed"
+        raise ValueError(msg)
 
 
 class MemoryItem(BaseModel):

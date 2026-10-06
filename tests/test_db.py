@@ -246,3 +246,37 @@ def test_legacy_db_migrates_to_current_version(db_path):
     ).fetchone()
     assert row is not None
     conn.close()
+
+
+def test_memory_create_rolls_back_on_failure(fresh_db, monkeypatch):
+    """A failure mid-operation leaves no partial rows (atomic semantic ops)."""
+    import totem_mcp.tools as tools
+    from totem_mcp.models import MemoryItem
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tools, "insert_history", boom)
+    with pytest.raises(RuntimeError):
+        tools.memory_create(
+            fresh_db, type="gotcha", title="T", statement="S", tags=["x"]
+        )
+    assert get_all_items(fresh_db) == []
+
+
+def test_memory_relate_rolls_back_on_failure(fresh_db, monkeypatch):
+    import totem_mcp.tools as tools
+    from totem_mcp.db import get_all_relations
+
+    a = tools.memory_create(fresh_db, type="gotcha", title="A", statement="claim A", tags=["x"])
+    b = tools.memory_create(fresh_db, type="gotcha", title="B", statement="claim B", tags=["x"])
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    # supersedes inserts the relation then updates the target status; a failure
+    # in that second step must roll the relation back too.
+    monkeypatch.setattr(tools, "update_item_row", boom)
+    with pytest.raises(RuntimeError):
+        tools.memory_relate(fresh_db, a["id"], b["id"], "supersedes")
+    assert get_all_relations(fresh_db) == []

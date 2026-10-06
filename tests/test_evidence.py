@@ -89,3 +89,55 @@ def test_semantic_candidates_hook(fresh_db):
         fresh_db, tags=[], task="x", semantic_candidates=lambda task: [semantic["id"]]
     )
     assert "Semantic hit" in result["context"]
+
+
+def _check(ev, target):
+    return check_staleness(
+        target,
+        ev["startLine"],
+        ev["endLine"],
+        ev["contentHash"],
+        symbol=ev.get("symbol"),
+        blob_hash=ev.get("blobHash"),
+        symbol_hash=ev.get("symbolHash"),
+    )
+
+
+def test_symbol_body_change_is_stale(fresh_db, tmp_path):
+    target = tmp_path / "svc.py"
+    target.write_text("def validate_token():\n    return jwt.verify(token)\n")
+    reg = register_file_read(
+        fresh_db, path=str(target), statement="validate_token verifies the JWT",
+        subject="validate_token", kind="function", tags=["auth"],
+    )
+    ev = reg["evidence"]
+    assert ev["symbol"] == "validate_token"
+    assert ev["symbolHash"]
+
+    # moved + reformatted, same body -> fresh
+    target.write_text("# header\n\n" + "def validate_token():\n        return jwt.verify(token)\n")
+    assert not _check(ev, target)
+
+    # materially changed body -> stale (the P0 case)
+    target.write_text("def validate_token():\n    return True\n")
+    assert _check(ev, target)
+
+    # unrelated file edit, symbol unchanged -> fresh
+    target.write_text(
+        "def validate_token():\n    return jwt.verify(token)\n\n\ndef other():\n    return 2\n"
+    )
+    assert not _check(ev, target)
+
+
+def test_legacy_symbol_evidence_without_hash_is_presence_only(fresh_db, tmp_path):
+    target = tmp_path / "m.py"
+    body = "def f():\n    return 1\n"
+    target.write_text(body)
+    # no symbolHash -> legacy presence-only behaviour
+    assert not check_staleness(
+        target, 1, 2, hash_content(body), symbol="f", blob_hash=None, symbol_hash=None
+    )
+    target.write_text("def f():\n    return 999\n")
+    assert not check_staleness(
+        target, 1, 2, hash_content(body), symbol="f", blob_hash=None, symbol_hash=None
+    )

@@ -15,7 +15,7 @@ import turso
 
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -72,8 +72,13 @@ CREATE TABLE IF NOT EXISTS memory_relations (
     from_id TEXT NOT NULL,
     to_id TEXT NOT NULL,
     kind TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    UNIQUE (from_id, to_id, kind)
 );
+"""
+CREATE_RELATIONS_INDEXES = """
+CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations (from_id);
+CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations (to_id);
 """
 
 CREATE_META = """
@@ -205,9 +210,42 @@ def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_CONFLICTS)
     conn.executescript(CREATE_HISTORY)
     conn.executescript(CREATE_RELATIONS)
+    conn.executescript(CREATE_RELATIONS_INDEXES)
     conn.executescript(CREATE_META)
     _migrate(conn)
     conn.commit()
+
+
+@contextmanager
+def transaction(conn: turso.Connection):
+    """Run a block atomically; commit on success, roll back on any exception.
+
+    Nested calls reuse the outer transaction, so composite operations (create +
+    history + relation + status update) commit or fail as one unit. Low-level
+    helpers never commit; the semantic operation owns the boundary.
+    """
+    if getattr(conn, "in_transaction", False):
+        yield conn
+        return
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
+def atomic(fn):
+    """Decorator: run a tool function inside one transaction (first arg is conn)."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(conn, *args, **kwargs):
+        with transaction(conn):
+            return fn(conn, *args, **kwargs)
+
+    return wrapper
 
 
 def _migrate(conn: turso.Connection) -> None:
@@ -222,6 +260,8 @@ def _migrate(conn: turso.Connection) -> None:
         _migrate_scope(conn)
     if version < 4:
         _migrate_epistemics(conn)
+    if version < 5:
+        _migrate_relations(conn)
     _set_schema_version(conn, SCHEMA_VERSION)
 
 
@@ -257,6 +297,27 @@ def _migrate_epistemics(conn: turso.Connection) -> None:
             conn.execute(f"ALTER TABLE memory_items ADD COLUMN {col}")
         except Exception:
             pass  # column already exists
+
+
+def _migrate_relations(conn: turso.Connection) -> None:
+    """v5: dedupe relations, then add unique + lookup indexes."""
+    try:
+        conn.execute(
+            "DELETE FROM memory_relations WHERE id NOT IN "
+            "(SELECT MIN(id) FROM memory_relations GROUP BY from_id, to_id, kind)"
+        )
+    except Exception:
+        pass
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations (from_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations (to_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS memory_relations_unique "
+        "ON memory_relations (from_id, to_id, kind)"
+    )
 
 
 COLUMNS = [
@@ -329,7 +390,6 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
             item.applicability,
         ),
     )
-    conn.commit()
 
 
 def insert_history(
@@ -359,7 +419,6 @@ def insert_history(
             datetime.now(timezone.utc).isoformat(),
         ),
     )
-    conn.commit()
 
 
 def get_item(conn: turso.Connection, item_id: str) -> MemoryItem | None:
@@ -389,7 +448,6 @@ def update_item_row(
         f"UPDATE memory_items SET {', '.join(set_clauses)} WHERE id = ?",
         values,
     )
-    conn.commit()
 
 
 def soft_delete(conn: turso.Connection, item_id: str) -> None:
@@ -554,7 +612,6 @@ def insert_conflict(conn: turso.Connection, conflict: Conflict) -> None:
             datetime.now(timezone.utc).isoformat(),
         ),
     )
-    conn.commit()
 
 
 def _conflict_from_row(row) -> Conflict:
@@ -607,7 +664,6 @@ def resolve_conflict(
         "UPDATE conflicts SET resolved_at = ?, resolution = ? WHERE id = ?",
         (datetime.now(timezone.utc).isoformat(), resolution, conflict_id),
     )
-    conn.commit()
     return {"id": conflict_id, "resolution": resolution, "resolved": True}
 
 
@@ -764,21 +820,67 @@ RELATION_KINDS = (
 )
 
 
+def _relation_reaches(
+    conn: turso.Connection, start_id: str, target_id: str, kind: str, _seen: set | None = None
+) -> bool:
+    """True if following ``kind`` edges from start_id reaches target_id."""
+    if _seen is None:
+        _seen = set()
+    if start_id == target_id:
+        return True
+    if start_id in _seen:
+        return False
+    _seen.add(start_id)
+    rows = conn.execute(
+        "SELECT to_id FROM memory_relations WHERE from_id = ? AND kind = ?",
+        (start_id, kind),
+    ).fetchall()
+    return any(_relation_reaches(conn, r[0], target_id, kind, _seen) for r in rows)
+
+
 def insert_relation(
     conn: turso.Connection, from_id: str, to_id: str, kind: str
 ) -> dict:
-    """Create a typed relation between two memories."""
+    """Create a typed relation between two memories.
+
+    Idempotent for an existing (from, to, kind) triple. Rejects self-relations,
+    dangling endpoints, and cycles for state-changing kinds (supersedes,
+    invalidates). libSQL does not enforce foreign keys by default, so endpoints
+    are validated here.
+    """
     from datetime import datetime, timezone
 
     if kind not in RELATION_KINDS:
         raise ValueError(f"kind must be one of: {', '.join(RELATION_KINDS)}")
+    if from_id == to_id:
+        raise ValueError("a memory cannot relate to itself")
+    for endpoint in (from_id, to_id):
+        row = conn.execute(
+            "SELECT id FROM memory_items WHERE id = ? AND status != 'deleted'",
+            (endpoint,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"relation endpoint not found: {endpoint}")
+    existing = conn.execute(
+        "SELECT id, from_id, to_id, kind FROM memory_relations "
+        "WHERE from_id = ? AND to_id = ? AND kind = ?",
+        (from_id, to_id, kind),
+    ).fetchone()
+    if existing is not None:
+        return {
+            "id": existing[0],
+            "from_id": existing[1],
+            "to_id": existing[2],
+            "kind": existing[3],
+        }
+    if kind in ("supersedes", "invalidates") and _relation_reaches(conn, to_id, from_id, kind):
+        raise ValueError(f"'{kind}' relation would create a cycle")
     relation_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO memory_relations (id, from_id, to_id, kind, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (relation_id, from_id, to_id, kind, datetime.now(timezone.utc).isoformat()),
     )
-    conn.commit()
     return {"id": relation_id, "from_id": from_id, "to_id": to_id, "kind": kind}
 
 
