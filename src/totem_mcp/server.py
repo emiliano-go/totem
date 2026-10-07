@@ -25,6 +25,7 @@ from .tools import (
     memory_recent,
     memory_search,
     memory_update,
+    memory_verify,
     register_file_read,
     register_file_write,
     resolve_conflict,
@@ -273,6 +274,45 @@ def memory_delete_tool(
                 conn, id, reason,
                 actor=actor, session=session, request_id=request_id, operation_id=operation_id,
             )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_verify_tool(
+    id: str,
+    method: str | None = None,
+    commit: str | None = None,
+    confidence: float = 1.0,
+    verified_by_id: str | None = None,
+    project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> str:
+    """Record that a memory was verified: sets verified_at and verified_commit.
+
+    Verification, not provenance, is what earns confidence 1.0.
+
+    Args:
+        id: The memory item ID to mark verified
+        method: How it was verified (stored in history)
+        commit: Git commit verified at (defaults to HEAD)
+        confidence: Confidence to set (default 1.0)
+        verified_by_id: Optional memory ID holding the verification artifact
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = memory_verify(
+                conn, id, method=method, commit=commit, confidence=confidence,
+                verified_by_id=verified_by_id, actor=actor, session=session,
+                request_id=request_id, operation_id=operation_id,
+            )
+            if result is None:
+                return not_found(f"Item {id} not found")
             return json.dumps(result, indent=2)
         except Exception as e:
             return error_response(e)

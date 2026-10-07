@@ -27,6 +27,7 @@ from .db import (
     insert_relation,
     get_all_items,
     get_item,
+    get_head_commit,
     get_overlapping_items,
     import_items as db_import_items,
     init_db,
@@ -423,6 +424,52 @@ def memory_update(
     )
     for field_name, old_val, new_val in changes:
         insert_history(conn, id, "updated", field=field_name, old_value=old_val, new_value=new_val, reason=reason, source="memory_update", actor=actor, session=session, request_id=request_id)
+    updated = get_item(conn, id)
+    return updated.model_dump(by_alias=True) if updated else None
+
+
+@atomic
+@idempotent
+def memory_verify(
+    conn: turso.Connection,
+    id: str,
+    method: str | None = None,
+    commit: str | None = None,
+    confidence: float = 1.0,
+    verified_by_id: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict | None:
+    """Record that a memory was checked: sets verified_at and verified_commit.
+
+    Verification, not provenance, is what earns top trust, so confidence is
+    raised to ``confidence`` (default 1.0). ``commit`` defaults to HEAD. An
+    optional ``verified_by_id`` links the verification artifact (a test result,
+    log, etc.) via a ``verified_by`` relation. Returns None if not found.
+    """
+    item = get_item(conn, id)
+    if item is None:
+        return None
+    if confidence is not None and not (0 <= confidence <= 1):
+        raise ValueError("confidence must be in [0, 1]")
+
+    commit = commit or get_head_commit()
+    now = _now()
+    fields = {"verified_at": now, "verified_commit": commit, "updated_at": now}
+    if confidence is not None:
+        fields["confidence"] = confidence
+    update_item_row(conn, id, fields)
+    insert_history(
+        conn, id, "verified", field="verificationMethod", new_value=method,
+        reason="memory_verify", source="memory_verify", actor=actor,
+        session=session, request_id=request_id, commit=commit,
+    )
+    if verified_by_id:
+        if get_item(conn, verified_by_id) is None:
+            raise ValueError(f"verified_by_id not found: {verified_by_id}")
+        insert_relation(conn, id, verified_by_id, "verified_by")
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
 

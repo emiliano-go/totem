@@ -1,0 +1,72 @@
+"""Verification: verified_at/verified_commit record that a memory was checked."""
+
+from __future__ import annotations
+
+from totem_mcp.db import get_item
+from totem_mcp.tools import memory_create, memory_delete, memory_verify
+
+
+def _item(conn, title="claim"):
+    return memory_create(
+        conn, type="gotcha", title=title, statement=f"claim {title}", tags=["v"]
+    )["id"]
+
+
+def test_verify_sets_fields_and_confidence(fresh_db):
+    item_id = _item(fresh_db)
+
+    result = memory_verify(fresh_db, item_id, method="pytest", commit="abc123")
+
+    stored = get_item(fresh_db, item_id)
+    assert stored.verified_at is not None
+    assert stored.verified_commit == "abc123"
+    assert stored.confidence == 1.0
+    assert result["verifiedAt"] == stored.verified_at
+
+
+def test_verify_defaults_commit_to_head_or_none(fresh_db):
+    item_id = _item(fresh_db)
+    result = memory_verify(fresh_db, item_id)
+    assert result["verifiedAt"] is not None
+    assert "verifiedCommit" in result  # None outside a repo, sha inside
+
+
+def test_verify_records_history(fresh_db):
+    item_id = _item(fresh_db)
+
+    memory_verify(fresh_db, item_id, method="ran the suite", commit="deadbeef")
+
+    rows = fresh_db.execute(
+        "SELECT event, field, new_value FROM memory_history "
+        "WHERE item_id = ? AND event = 'verified'",
+        (item_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][2] == "ran the suite"
+
+
+def test_verify_can_link_verification_artifact(fresh_db):
+    item_id = _item(fresh_db, "claim")
+    artifact = _item(fresh_db, "test result")
+
+    memory_verify(fresh_db, item_id, verified_by_id=artifact)
+
+    rel = fresh_db.execute(
+        "SELECT from_id, to_id, kind FROM memory_relations WHERE kind = 'verified_by'"
+    ).fetchone()
+    assert rel == (item_id, artifact, "verified_by")
+
+
+def test_verify_confidence_override(fresh_db):
+    item_id = _item(fresh_db)
+    result = memory_verify(fresh_db, item_id, confidence=0.75)
+    assert result["confidence"] == 0.75
+
+
+def test_verify_missing_and_deleted(fresh_db):
+    assert memory_verify(fresh_db, "nope") is None
+
+    item_id = _item(fresh_db)
+    memory_delete(fresh_db, item_id, "obsolete")
+    # get_item hides deleted rows, so a deleted item reads as not found.
+    assert memory_verify(fresh_db, item_id) is None
