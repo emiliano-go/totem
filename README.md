@@ -55,7 +55,7 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **31 MCP tools** (16 core + 15 typed wrappers)
+- **32 MCP tools** (17 core + 15 typed wrappers)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
@@ -187,7 +187,7 @@ totem import backup.json
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (31)
+## MCP tools (32)
 
 | Tool | Description |
 |------|-------------|
@@ -205,12 +205,13 @@ totem import backup.json
 | `engineering_context_tool` | Scored context assembly with task relevance |
 | `memory_export_tool` | Export all memories as JSON |
 | `memory_import_tool` | Import memories from JSON (skips duplicates) |
+| `memory_gc_tool` | Purge terminal-state memories past retention (dry-run default) |
 | `register_file_read_tool` | Store facts learned from reading a file (auto-hashes) |
 | `register_file_write_tool` | Register file changes with reason (auto-hashes) |
 | `*_create` (14) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
-## CLI commands (14)
+## CLI commands (15)
 
 | Command | Description |
 |---------|-------------|
@@ -227,6 +228,7 @@ totem import backup.json
 | `totem search` | Full-text search |
 | `totem export` | Export memories as JSON |
 | `totem import <FILE>` | Import memories from JSON |
+| `totem gc` | Purge terminal-state memories past retention (`--apply`) |
 | `totem context` | Assemble scored context |
 
 ## Context assembly

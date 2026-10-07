@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import turso
@@ -549,6 +549,46 @@ def resolve_conflict(
                 request_id=request_id,
             )
     return result
+
+
+@atomic
+def memory_gc(
+    conn: turso.Connection,
+    retention_days: int = 90,
+    dry_run: bool = True,
+    actor: str | None = None,
+) -> dict:
+    """Purge terminal-state memories older than ``retention_days``.
+
+    Eligible items are ``superseded``/``invalidated``/``resolved``, untouched for
+    the retention window, and not referenced by any relation. Dry-run is the
+    default: it reports candidates and changes nothing.
+    """
+    if retention_days < 0:
+        raise ValueError("retention_days must be >= 0")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    rows = conn.execute(
+        "SELECT id FROM memory_items "
+        "WHERE status IN ('superseded', 'invalidated', 'resolved') "
+        "AND updated_at < ? "
+        "AND id NOT IN (SELECT to_id FROM memory_relations) "
+        "ORDER BY updated_at",
+        (cutoff,),
+    ).fetchall()
+    ids = [r[0] for r in rows]
+    if not dry_run:
+        for item_id in ids:
+            soft_delete(conn, item_id)
+            insert_history(
+                conn, item_id, "gc_deleted", reason="memory_gc",
+                source="memory_gc", actor=actor,
+            )
+    return {
+        "dry_run": dry_run,
+        "count": len(ids),
+        "deleted": 0 if dry_run else len(ids),
+        "candidates": ids,
+    }
 
 
 EXPORT_FORMAT_VERSION = 1

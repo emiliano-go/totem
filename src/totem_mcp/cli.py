@@ -12,6 +12,7 @@ from .tools import (
     memory_create,
     memory_delete,
     memory_export,
+    memory_gc,
     memory_get,
     memory_history,
     memory_import,
@@ -159,6 +160,17 @@ def delete(ctx: click.Context, item_id: str, reason: str) -> None:
     """Soft-delete a memory item."""
     with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_delete(conn, item_id, reason)
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.option("--retention-days", default=90, type=int, help="Age threshold in days (default 90)")
+@click.option("--apply", "apply_", is_flag=True, help="Delete candidates (default: dry-run)")
+@click.pass_context
+def gc(ctx: click.Context, retention_days: int, apply_: bool) -> None:
+    """Purge terminal-state memories past the retention window."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_gc(conn, retention_days=retention_days, dry_run=not apply_)
         click.echo(json.dumps(result, indent=2))
 
 

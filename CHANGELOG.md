@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Concurrency
+
+- Turso `multiprocess_wal` plus a serialized first open: several agent
+  processes can share one project DB (previously the second opener failed with
+  "File is locked by another process").
+- Write transactions use `BEGIN IMMEDIATE` with bounded retry; `init_db`
+  retries its idempotent bootstrap.
+- `memory_locators` identity is UNIQUE `(path, subject)` (schema v9, with
+  dedupe); `register_file_read`/`write` recover from a lost locator race.
+- New `tests/test_concurrency.py`: real multi-process tests for concurrent
+  creates, same `operation_id`, simultaneous migration, and parallel file
+  registration.
+
+### Trust
+
+- `asserted_by` is provenance, not verification: user default confidence
+  `1.0` -> `0.9`; nothing reaches `1.0` by provenance alone.
+- CLI `totem create`: `--confidence` defaults from provenance; new
+  `--asserted-by`.
+
+### Memory lifecycle
+
+- `memory_gc` (MCP tool + `totem gc`): soft-deletes superseded/invalidated/
+  resolved memories past a retention window, skipping items with inbound
+  relations; dry-run by default.
+
 ## 0.6.0
 
 Hardening release: correctness, transactional integrity, and operational
