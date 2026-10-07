@@ -270,6 +270,14 @@ totem auto-detects your project root via `git rev-parse --show-toplevel`. Overri
 
 `engineering_context` searches both, with project memories taking precedence.
 
+## Trust and provenance
+
+`asserted_by` records **who asserted a claim** (user, test, source, git, doc,
+runtime, agent); it is not a verification signal. Each provenance sets a default
+confidence: test `0.95`, user/source/git/doc `0.9`, runtime `0.7`, agent `0.6`
+(hypotheses cap at `0.4`). Nothing reaches `1.0` by provenance alone; pass an
+explicit `confidence` for that. A user-asserted claim is trusted, not proven.
+
 ## Deployment boundary
 
 Totem is a **single-user, local memory layer**. It has no tenancy or
