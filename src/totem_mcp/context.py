@@ -112,11 +112,19 @@ def _score_item(
     return score
 
 
-def _serialize_item(item) -> str:
+def _clip(text, limit: int | None):
+    """Truncate a long field so one item cannot dominate the context budget."""
+    text = str(text)
+    if limit and len(text) > limit:
+        return text[:limit].rstrip() + "…"
+    return text
+
+
+def _serialize_item(item, max_item_chars: int | None = None) -> str:
     lines = [f"[{item.type.value.upper()}] {item.title}"]
-    lines.append(f"  Statement: {item.statement}")
+    lines.append(f"  Statement: {_clip(item.statement, max_item_chars)}")
     if item.details:
-        lines.append(f"  Details: {item.details}")
+        lines.append(f"  Details: {_clip(item.details, max_item_chars)}")
     lines.append(f"  Tags: {', '.join(item.tags)}")
     lines.append(f"  Confidence: {item.confidence} | Importance: {item.importance}")
     lines.append(f"  Status: {item.status.value}")
@@ -137,7 +145,7 @@ def _serialize_item(item) -> str:
         lines.append(f"  Evidence: {refs}")
     if item.metadata:
         for k, v in item.metadata.items():
-            lines.append(f"  {k}: {v}")
+            lines.append(f"  {k}: {_clip(v, max_item_chars)}")
     return "\n".join(lines)
 
 
@@ -206,6 +214,7 @@ def engineering_context(
     current_task: str | None = None,
     paths: list[str] | None = None,
     semantic_candidates=None,
+    max_item_chars: int | None = None,
 ) -> dict:
     """Assemble engineering context.
 
@@ -382,7 +391,7 @@ def engineering_context(
     kept_user = user_items[:MAX_USER_ITEMS]
     omitted["user"] = max(0, len(user_items) - len(kept_user))
     for item in kept_user:
-        user_lines.append(_serialize_item(item))
+        user_lines.append(_serialize_item(item, max_item_chars))
     if omitted["user"]:
         user_lines.append(f"  ... ({omitted['user']} more user items omitted)")
     if not kept_user:
@@ -454,7 +463,7 @@ def engineering_context(
             items_of_type = grouped[type_.value]
         if not items_of_type:
             continue
-        lines = [f"\n{LABELS[type_]}:"] + [_serialize_item(item) for item in items_of_type]
+        lines = [f"\n{LABELS[type_]}:"] + [_serialize_item(item, max_item_chars) for item in items_of_type]
         add_block(False, lines, [item.id for item in items_of_type])
 
     # STALE WARNINGS (bounded)
@@ -479,7 +488,7 @@ def engineering_context(
         ordered = sorted(stale_items, key=lambda i: i.type not in always)
         kept_stale = ordered[:MAX_STALE_ITEMS]
         s_lines = ["\nSTALE KNOWLEDGE (verify before relying):"]
-        s_lines.extend(_serialize_item(item) for item in kept_stale)
+        s_lines.extend(_serialize_item(item, max_item_chars) for item in kept_stale)
         omitted["stale"] = max(0, len(stale_items) - len(kept_stale))
         if omitted["stale"]:
             s_lines.append(f"  ... ({omitted['stale']} lower-priority stale items omitted)")
