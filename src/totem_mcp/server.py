@@ -18,6 +18,7 @@ from .tools import (
     memory_relations,
     memory_delete,
     memory_export,
+    memory_gc,
     memory_get,
     memory_import,
     memory_list,
@@ -271,6 +272,33 @@ def memory_delete_tool(
             result = memory_delete(
                 conn, id, reason,
                 actor=actor, session=session, request_id=request_id, operation_id=operation_id,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_gc_tool(
+    retention_days: int = 90,
+    dry_run: bool = True,
+    project: str | None = None,
+    actor: str | None = None,
+) -> str:
+    """Purge terminal-state memories older than a retention window.
+
+    Only superseded/invalidated/resolved items untouched for ``retention_days``
+    and not referenced by any relation are eligible. Defaults to dry-run.
+
+    Args:
+        retention_days: Age threshold in days (default 90)
+        dry_run: Report candidates without deleting (default True)
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = memory_gc(
+                conn, retention_days=retention_days, dry_run=dry_run, actor=actor,
             )
             return json.dumps(result, indent=2)
         except Exception as e:
