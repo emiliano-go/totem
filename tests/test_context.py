@@ -157,3 +157,52 @@ def test_context_without_budget_includes_everything(fresh_db):
     result = engineering_context(fresh_db, tags=["t"], task="t")
     assert result["budget"] is None
     assert "U0" in result["context"] and "U9" in result["context"]
+
+
+def test_conflict_relevance_filters_unrelated(fresh_db):
+    from totem_mcp.db import insert_conflict
+    from totem_mcp.models import Conflict
+
+    a = memory_create(fresh_db, type="gotcha", title="A", statement="claim A", tags=["sel"])
+    b = memory_create(fresh_db, type="gotcha", title="B", statement="claim B", tags=["sel"])
+    c = memory_create(fresh_db, type="gotcha", title="C", statement="claim C", tags=["other"])
+    d = memory_create(fresh_db, type="gotcha", title="D", statement="claim D", tags=["other"])
+
+    def conflict(x, y, claim):
+        return Conflict(
+            itemA=x, itemB=y, claimA=claim, claimB=claim,
+            condition="c", resolutionOptions=["a", "b"],
+        )
+
+    insert_conflict(fresh_db, conflict(a["id"], b["id"], "A"))
+    insert_conflict(fresh_db, conflict(c["id"], d["id"], "C"))
+    fresh_db.commit()
+
+    result = engineering_context(fresh_db, tags=["sel"], task="t")
+    # only the conflict among considered memories is surfaced
+    assert len(result["conflicts"]) == 1
+    assert result["conflicts"][0]["itemA"] == a["id"]
+
+
+def test_task_scope_matches_current_task(fresh_db):
+    from totem_mcp.context import _task_scope_matches
+    from totem_mcp.db import get_item
+
+    matching = memory_create(
+        fresh_db, type="gotcha", title="M", statement="m", tags=["x"],
+        scope='{"kind":"task","value":"migrate"}',
+    )
+    other = memory_create(
+        fresh_db, type="gotcha", title="O", statement="o", tags=["x"],
+        scope='{"kind":"task","value":"css"}',
+    )
+    assert _task_scope_matches(get_item(fresh_db, matching["id"]), {"migrate", "the", "db"})
+    assert not _task_scope_matches(get_item(fresh_db, other["id"]), {"migrate", "the", "db"})
+
+
+def test_context_reports_why(fresh_db):
+    item = memory_create(
+        fresh_db, type="gotcha", title="Tagged", statement="tagged fact", tags=["t"]
+    )
+    result = engineering_context(fresh_db, tags=["t"], task="t")
+    assert "tag" in result["why"][item["id"]]

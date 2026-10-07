@@ -148,3 +148,22 @@ def test_import_normal_skips_invalid_and_reports(fresh_db):
     assert report["items_imported"] == 1
     assert report["items_skipped"] == 1
     assert any(e["section"] == "items" for e in report["errors"])
+
+
+def test_history_records_actor_and_source(fresh_db):
+    item = memory_create(
+        fresh_db, type="gotcha", title="Audited", statement="audited claim", tags=["t"],
+        actor="kimi", session="abc123", request_id="req-1",
+    )
+    created = next(h for h in memory_history(fresh_db, item["id"]) if h["event"] == "created")
+    assert created["source"] == "memory_create"
+    assert created["actor"] == "kimi"
+    assert created["session"] == "abc123"
+    assert created["request_id"] == "req-1"
+
+    other = memory_create(
+        fresh_db, type="gotcha", title="Other", statement="other claim", tags=["t"]
+    )
+    memory_relate(fresh_db, item["id"], other["id"], "depends_on", actor="kimi")
+    related = [h for h in memory_history(fresh_db, item["id"]) if h["event"] == "related"]
+    assert related and related[0]["actor"] == "kimi"

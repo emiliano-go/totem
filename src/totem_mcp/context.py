@@ -46,11 +46,25 @@ def _scope_value(scope: str | None) -> str:
     return text
 
 
-def _scope_boost(item, paths: list[str] | None) -> float:
-    """Scope precedence: task/path-specific knowledge outranks project/global."""
+def _task_scope_matches(item, task_words: set[str] | None) -> bool:
+    """True when a task-scoped memory's value actually matches the current task."""
+    if scope_kind(item.scope) != "task" or not task_words:
+        return False
+    value = _scope_value(item.scope).lower()
+    if not value:
+        return False
+    return value in task_words or any(word and word in value for word in task_words)
+
+
+def _scope_boost(item, paths: list[str] | None, task_words: set[str] | None = None) -> float:
+    """Scope precedence: task/path-specific knowledge outranks project/global.
+
+    A task scope only boosts when its value matches the current task, so
+    ``scope=task:migrate`` does not boost an unrelated CSS task.
+    """
     kind = scope_kind(item.scope)
     if kind == "task":
-        return 1.15
+        return 1.15 if _task_scope_matches(item, task_words) else 1.0
     if kind == "user":
         return 1.05
     if kind == "path" and paths:
@@ -90,7 +104,7 @@ def _score_item(
     )
     if item.type in _BOOSTED_TYPES:
         score *= 1.25
-    score *= _scope_boost(item, paths)
+    score *= _scope_boost(item, paths, task_words)
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
     return score
@@ -230,6 +244,8 @@ def engineering_context(
     # Path activation: direct evidence matches plus one bounded relation hop;
     # semantic_candidates is an optional extra candidate source (embeddings).
     extra_ids: set[str] = set()
+    relation_hop_ids: set[str] = set()
+    semantic_ids: set[str] = set()
     path_matched: set[str] = set()
     if paths:
         path_matched = {
@@ -238,12 +254,14 @@ def engineering_context(
             if {ev.path for ev in item.evidence} & set(paths)
         }
         for rel in get_relations_for_items(conn, list(path_matched)):
-            extra_ids.update({rel["from_id"], rel["to_id"]} - path_matched)
+            relation_hop_ids.update({rel["from_id"], rel["to_id"]} - path_matched)
+        extra_ids.update(relation_hop_ids)
     if semantic_candidates is not None:
         try:
-            extra_ids.update(semantic_candidates(task or "") or [])
+            semantic_ids = set(semantic_candidates(task or "") or [])
         except Exception:
-            pass
+            semantic_ids = set()
+        extra_ids.update(semantic_ids)
     if extra_ids:
         known = {item.id for item in all_items}
         for item_id in extra_ids:
@@ -316,8 +334,9 @@ def engineering_context(
                     f"STALE: [{item.type.value}] {item.title}: {ev.path}:{ev.start_line}-{ev.end_line}"
                 )
 
-    # Load unresolved conflicts, never budget-truncated
-    stored_conflicts = get_open_conflicts(conn)
+    # All unresolved conflicts (relevance-filtered below, once the candidate set
+    # is known).
+    open_conflicts = get_open_conflicts(conn)
 
     # Group by type for output ordering (user-scope items live in USER CONTEXT)
     grouped: dict[str, list] = {t.value: [] for t in TYPE_ORDER}
@@ -393,6 +412,22 @@ def engineering_context(
             f"{(b.title if b else rel['to_id'])}"
         )
     conflict_lines = ["\nCONTEXT CONFLICTS:"]
+    # Relevance: keep a conflict only when it touches a memory we actually
+    # considered, or one of the critical classes (invariants/constraints/
+    # contracts) that are globally relevant. Everything else is context noise.
+    relevant_ids = set(by_id) | {i.id for i in stale_items} | path_matched | extra_ids
+    critical_types = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.CONTRACT}
+
+    def _conflict_relevant(conflict) -> bool:
+        if conflict.item_a in relevant_ids or conflict.item_b in relevant_ids:
+            return True
+        for endpoint in (conflict.item_a, conflict.item_b):
+            item = by_id.get(endpoint) or get_item(conn, endpoint)
+            if item is not None and item.type in critical_types:
+                return True
+        return False
+
+    stored_conflicts = [c for c in open_conflicts if _conflict_relevant(c)]
     kept_conf = stored_conflicts[:MAX_CONFLICTS]
     omitted["conflicts"] = max(0, len(stored_conflicts) - len(kept_conf))
     for c in kept_conf:
@@ -475,6 +510,31 @@ def engineering_context(
 
     selected_ids = [item.id for _, item in scored if item.id in included_ids]
 
+    # Explainability: why each included memory entered context.
+    item_map = dict(by_id)
+    for stale in stale_items:
+        item_map.setdefault(stale.id, stale)
+    tag_set = set(tags)
+    why: dict[str, list[str]] = {}
+    for item_id in included_ids:
+        item = item_map.get(item_id)
+        reasons: list[str] = []
+        if item_id in db_user_ids or (item and scope_kind(item.scope) == "user"):
+            reasons.append("user-scope")
+        if item_id in path_matched:
+            reasons.append("path")
+        if item_id in relation_hop_ids:
+            reasons.append("relation-hop")
+        if item_id in semantic_ids:
+            reasons.append("semantic")
+        if item and tag_set and (set(item.tags) & tag_set):
+            reasons.append("tag")
+        if item and _task_scope_matches(item, task_words):
+            reasons.append("task-scope")
+        if item and item.type in _BOOSTED_TYPES:
+            reasons.append("critical")
+        why[item_id] = reasons
+
     return {
         "context": context,
         "selectedIds": selected_ids,
@@ -486,4 +546,5 @@ def engineering_context(
         "budget": token_budget,
         "estimatedTokens": token_count,
         "omitted": omitted,
+        "why": why,
     }

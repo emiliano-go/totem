@@ -141,3 +141,19 @@ def test_legacy_symbol_evidence_without_hash_is_presence_only(fresh_db, tmp_path
     assert not check_staleness(
         target, 1, 2, hash_content(body), symbol="f", blob_hash=None, symbol_hash=None
     )
+
+
+def test_locator_and_statement_index(fresh_db, tmp_path):
+    from totem_mcp.db import find_by_statement_normalized, find_locator_item
+
+    target = tmp_path / "idx.py"
+    target.write_text("def f():\n    return 1\n")
+    reg = register_file_read(
+        fresh_db, path=str(target), statement="f returns 1",
+        subject="f", kind="function", tags=["t"],
+    )
+    # (path, subject) resolves through the locator index, not a corpus scan
+    assert find_locator_item(fresh_db, str(target), "f") == reg["id"]
+    # density dedup resolves through the normalized-statement index
+    hit = find_by_statement_normalized(fresh_db, "  F   Returns   1 ")
+    assert hit is not None and hit.id == reg["id"]

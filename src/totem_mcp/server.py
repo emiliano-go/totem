@@ -64,6 +64,10 @@ def memory_create_tool(
     scope: str | None = None,
     supersedes_id: str | None = None,
     project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> str:
     """Create a new memory item.
 
@@ -102,6 +106,10 @@ def memory_create_tool(
                 applicability=applicability,
                 scope=scope,
                 supersedes_id=supersedes_id,
+                actor=actor,
+                session=session,
+                request_id=request_id,
+                operation_id=operation_id,
             )
             return json.dumps(result, indent=2)
         except Exception as e:
@@ -114,6 +122,10 @@ def memory_relate_tool(
     to_id: str,
     kind: str,
     project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> str:
     """Create a typed relation between two memories.
 
@@ -125,7 +137,13 @@ def memory_relate_tool(
     """
     with db_connection(project=project) as conn:
         try:
-            return json.dumps(memory_relate(conn, from_id, to_id, kind), indent=2)
+            return json.dumps(
+                memory_relate(
+                    conn, from_id, to_id, kind,
+                    actor=actor, session=session, request_id=request_id, operation_id=operation_id,
+                ),
+                indent=2,
+            )
         except Exception as e:
             return error_response(e)
 
@@ -183,6 +201,10 @@ def memory_update_tool(
     evidence: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> str:
     """Update a memory item. Reason is optional but strongly recommended.
 
@@ -215,6 +237,10 @@ def memory_update_tool(
                 importance=importance,
                 evidence=evidence,
                 metadata=metadata,
+                actor=actor,
+                session=session,
+                request_id=request_id,
+                operation_id=operation_id,
             )
             if result is None:
                 return not_found(f"Item {id} not found")
@@ -224,7 +250,15 @@ def memory_update_tool(
 
 
 @mcp.tool()
-def memory_delete_tool(id: str, reason: str, project: str | None = None) -> str:
+def memory_delete_tool(
+    id: str,
+    reason: str,
+    project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> str:
     """Soft-delete a memory item. Reason is required.
 
     Args:
@@ -234,7 +268,10 @@ def memory_delete_tool(id: str, reason: str, project: str | None = None) -> str:
     """
     with db_connection(project=project) as conn:
         try:
-            result = memory_delete(conn, id, reason)
+            result = memory_delete(
+                conn, id, reason,
+                actor=actor, session=session, request_id=request_id, operation_id=operation_id,
+            )
             return json.dumps(result, indent=2)
         except Exception as e:
             return error_response(e)
@@ -316,7 +353,15 @@ def memory_commands_tool(limit: int = 20, project: str | None = None) -> str:
 
 
 @mcp.tool()
-def resolve_conflict_tool(conflict_id: str, resolution: str, project: str | None = None) -> str:
+def resolve_conflict_tool(
+    conflict_id: str,
+    resolution: str,
+    project: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> str:
     """Mark a conflict as resolved.
 
     Args:
@@ -326,7 +371,10 @@ def resolve_conflict_tool(conflict_id: str, resolution: str, project: str | None
     """
     with db_connection(project=project) as conn:
         try:
-            result = resolve_conflict(conn, conflict_id, resolution)
+            result = resolve_conflict(
+                conn, conflict_id, resolution,
+                actor=actor, session=session, request_id=request_id, operation_id=operation_id,
+            )
             if result is None:
                 return not_found(f"Conflict {conflict_id} not found")
             return json.dumps(result, indent=2)

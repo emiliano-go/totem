@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from datetime import datetime, timezone
@@ -12,7 +13,13 @@ import turso
 from .conflicts import detect_conflicts
 from .db import (
     atomic,
+    get_operation,
+    put_operation,
+    find_by_statement_normalized,
     find_by_title,
+    find_locator_item,
+    find_locator_item_by_path,
+    upsert_locator,
     get_all_relations,
     get_history,
     get_relations_for_item,
@@ -71,7 +78,25 @@ def _normalize_tags(tags: list[str]) -> list[str]:
     return [t.strip().lower().replace(" ", "-") for t in tags if t.strip()]
 
 
+def idempotent(fn):
+    """Replay a write by ``operation_id``: return the stored result, no redo."""
+    @functools.wraps(fn)
+    def wrapper(conn, *args, **kwargs):
+        op_id = kwargs.get("operation_id")
+        if op_id:
+            existing = get_operation(conn, op_id)
+            if existing is not None:
+                return {**existing, "replayed": True} if isinstance(existing, dict) else existing
+        result = fn(conn, *args, **kwargs)
+        if op_id:
+            put_operation(conn, op_id, result)
+        return result
+
+    return wrapper
+
+
 @atomic
+@idempotent
 def memory_create(
     conn: turso.Connection,
     type: str,
@@ -88,6 +113,10 @@ def memory_create(
     applicability: str | None = None,
     scope: str | None = None,
     supersedes_id: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> dict:
     """Create a new memory item (§43 memory_create).
 
@@ -173,19 +202,18 @@ def memory_create(
         if superseded is None:
             raise ValueError(f"supersedes_id not found: {supersedes_id}")
 
-    # Density: an identical claim updates rather than duplicates.
-    normalized = " ".join(statement.lower().split())
-    for existing_item in get_all_items(conn):
-        if " ".join((existing_item.statement or "").lower().split()) == normalized:
-            return {
-                "id": existing_item.id,
-                "status": existing_item.status.value,
-                "duplicate": True,
-                "warnings": [
-                    f"Identical statement already stored as {existing_item.id}; "
-                    "update it instead of creating a duplicate."
-                ],
-            }
+    # Density: an identical claim updates rather than duplicates (indexed lookup).
+    existing_item = find_by_statement_normalized(conn, statement)
+    if existing_item is not None:
+        return {
+            "id": existing_item.id,
+            "status": existing_item.status.value,
+            "duplicate": True,
+            "warnings": [
+                f"Identical statement already stored as {existing_item.id}; "
+                "update it instead of creating a duplicate."
+            ],
+        }
 
     conflicts = detect_conflicts(conn, item)
 
@@ -199,7 +227,10 @@ def memory_create(
         )
 
     insert_item(conn, item)
-    insert_history(conn, item.id, "created")
+    insert_history(
+        conn, item.id, "created", source="memory_create",
+        actor=actor, session=session, request_id=request_id,
+    )
     if superseded is not None:
         insert_relation(conn, item.id, superseded.id, "supersedes")
         update_item_row(
@@ -208,7 +239,8 @@ def memory_create(
             {"status": MemoryStatus.SUPERSEDED.value, "updated_at": _now()},
         )
         insert_history(
-            conn, superseded.id, "superseded", reason=f"superseded by {item.id}"
+            conn, superseded.id, "superseded", reason=f"superseded by {item.id}",
+            source="memory_create", actor=actor, session=session, request_id=request_id,
         )
 
     warnings = []
@@ -276,6 +308,7 @@ def memory_get(
 
 
 @atomic
+@idempotent
 def memory_update(
     conn: turso.Connection,
     id: str,
@@ -289,6 +322,10 @@ def memory_update(
     importance: float | None = None,
     evidence: list[dict] | None = None,
     metadata: dict | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> dict | None:
     """Update a memory item (§43 memory_update). reason is optional (defaults to 'maintenance')."""
     if not reason:
@@ -378,15 +415,27 @@ def memory_update(
     MemoryItem.model_validate(resulting)
 
     update_item_row(conn, id, fields)
-    insert_history(conn, id, "updated", reason=reason)
+    insert_history(
+        conn, id, "updated", reason=reason, source="memory_update",
+        actor=actor, session=session, request_id=request_id,
+    )
     for field_name, old_val, new_val in changes:
-        insert_history(conn, id, "updated", field=field_name, old_value=old_val, new_value=new_val, reason=reason)
+        insert_history(conn, id, "updated", field=field_name, old_value=old_val, new_value=new_val, reason=reason, source="memory_update", actor=actor, session=session, request_id=request_id)
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
 
 
 @atomic
-def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
+@idempotent
+def memory_delete(
+    conn: turso.Connection,
+    id: str,
+    reason: str,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict:
     """Soft-delete a memory item (§43 memory_delete). reason is required."""
     if not reason:
         raise ValueError("reason is required for deletion (§3)")
@@ -394,16 +443,24 @@ def memory_delete(conn: turso.Connection, id: str, reason: str) -> dict:
     if item is None:
         return {"error": f"Item {id} not found"}
     soft_delete(conn, id)
-    insert_history(conn, id, "deleted", reason=reason)
+    insert_history(
+        conn, id, "deleted", reason=reason, source="memory_delete",
+        actor=actor, session=session, request_id=request_id,
+    )
     return {"id": id, "status": "deleted"}
 
 
 @atomic
+@idempotent
 def memory_relate(
     conn: turso.Connection,
     from_id: str,
     to_id: str,
     kind: str,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> dict:
     """Create a typed relation between two memories (supersedes, contradicts,
     invalidates, derived_from, verified_by, refines, depends_on)."""
@@ -412,16 +469,26 @@ def memory_relate(
     if get_item(conn, to_id) is None:
         raise ValueError(f"to_id not found: {to_id}")
     relation = insert_relation(conn, from_id, to_id, kind)
+    insert_history(
+        conn, from_id, "related", field=kind, new_value=to_id,
+        source="memory_relate", actor=actor, session=session, request_id=request_id,
+    )
     if kind == "supersedes":
         update_item_row(
             conn, to_id, {"status": MemoryStatus.SUPERSEDED.value, "updated_at": _now()}
         )
-        insert_history(conn, to_id, "superseded", reason=f"superseded by {from_id}")
+        insert_history(
+            conn, to_id, "superseded", reason=f"superseded by {from_id}",
+            source="memory_relate", actor=actor, session=session, request_id=request_id,
+        )
     elif kind == "invalidates":
         update_item_row(
             conn, to_id, {"status": MemoryStatus.INVALIDATED.value, "updated_at": _now()}
         )
-        insert_history(conn, to_id, "invalidated", reason=f"invalidated by {from_id}")
+        insert_history(
+            conn, to_id, "invalidated", reason=f"invalidated by {from_id}",
+            source="memory_relate", actor=actor, session=session, request_id=request_id,
+        )
     return relation
 
 
@@ -457,13 +524,29 @@ def memory_recent(
 
 
 @atomic
+@idempotent
 def resolve_conflict(
     conn: turso.Connection,
     conflict_id: str,
     resolution: str,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
 ) -> dict | None:
-    """Mark a conflict as resolved (§45)."""
-    return db_resolve_conflict(conn, conflict_id, resolution)
+    """Mark a conflict as resolved (§45); recorded in the items' history."""
+    row = conn.execute(
+        "SELECT item_a, item_b FROM conflicts WHERE id = ?", (conflict_id,)
+    ).fetchone()
+    result = db_resolve_conflict(conn, conflict_id, resolution)
+    if result is not None and row is not None:
+        for item_id in {row[0], row[1]}:
+            insert_history(
+                conn, item_id, "conflict_resolved", new_value=resolution,
+                source="resolve_conflict", actor=actor, session=session,
+                request_id=request_id,
+            )
+    return result
 
 
 EXPORT_FORMAT_VERSION = 1
@@ -587,7 +670,7 @@ def memory_import(
             items_skipped += 1
             continue
         insert_item(conn, item)
-        insert_history(conn, item.id, "created", reason="import")
+        insert_history(conn, item.id, "created", reason="import", source="import")
         existing_ids.add(item.id)
         items_imported += 1
 
@@ -716,16 +799,9 @@ def register_file_read(
     symbol = symbol or _guess_symbol(lines, actual_start)
     symbol_hash = hash_symbol(file_path, symbol, text=content) if symbol else None
 
-    # Search for the existing implementation memory for this (path, subject)
-    existing = None
-    all_items = get_all_items(conn)
-    for item in all_items:
-        if item.type != MemoryType.IMPLEMENTATION:
-            continue
-        meta = item.metadata or {}
-        if meta.get("path") == path and meta.get("subject") == subject:
-            existing = item
-            break
+    # Locate the existing implementation memory via the locator index (no scan).
+    existing_id = find_locator_item(conn, path, subject)
+    existing = get_item(conn, existing_id) if existing_id else None
 
     evidence = Evidence(
         path=path,
@@ -776,7 +852,8 @@ def register_file_read(
             meta["symbolHash"] = symbol_hash
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
-        insert_history(conn, existing.id, "updated", reason="register_file_read")
+        upsert_locator(conn, existing.id, path, subject, symbol)
+        insert_history(conn, existing.id, "updated", reason="register_file_read", source="register_file_read")
         return {
             "id": existing.id,
             "action": "updated",
@@ -813,7 +890,8 @@ def register_file_read(
             },
         )
         insert_item(conn, item)
-        insert_history(conn, item.id, "created", reason="register_file_read")
+        upsert_locator(conn, item.id, path, subject, symbol)
+        insert_history(conn, item.id, "created", reason="register_file_read", source="register_file_read")
         return {
             "id": item.id,
             "action": "created",
@@ -865,16 +943,9 @@ def register_file_write(
     blob_hash = hash_content(content)
     symbol_hash = hash_symbol(file_path, symbol, text=content) if symbol else None
 
-    # Search for existing implementation memory with same path
-    existing = None
-    all_items = get_all_items(conn)
-    for item in all_items:
-        if item.type != MemoryType.IMPLEMENTATION:
-            continue
-        meta = item.metadata or {}
-        if meta.get("path") == path:
-            existing = item
-            break
+    # Locate the existing implementation memory via the locator index (no scan).
+    existing_id = find_locator_item_by_path(conn, path)
+    existing = get_item(conn, existing_id) if existing_id else None
 
     evidence = Evidence(
         path=path,
@@ -926,7 +997,8 @@ def register_file_write(
             meta["endLine"] = actual_end
         update_fields["metadata"] = json.dumps(meta)
         update_item_row(conn, existing.id, update_fields)
-        insert_history(conn, existing.id, "updated", reason=f"register_file_write: {reason}")
+        upsert_locator(conn, existing.id, path, path, symbol)
+        insert_history(conn, existing.id, "updated", reason=f"register_file_write: {reason}", source="register_file_write")
         return {
             "id": existing.id,
             "action": "updated",
@@ -956,7 +1028,8 @@ def register_file_write(
             },
         )
         insert_item(conn, item)
-        insert_history(conn, item.id, "created", reason=f"register_file_write: {reason}")
+        upsert_locator(conn, item.id, path, path, symbol)
+        insert_history(conn, item.id, "created", reason=f"register_file_write: {reason}", source="register_file_write")
         return {
             "id": item.id,
             "action": "created",

@@ -338,3 +338,25 @@ def test_migration_postcondition_failure_does_not_stamp(db_path, monkeypatch):
         db._migrate(conn)
     assert db._schema_version(conn) == 4
     conn.close()
+
+
+def test_operation_id_makes_writes_idempotent(fresh_db):
+    from totem_mcp.tools import memory_create, memory_relate
+
+    first = memory_create(
+        fresh_db, type="gotcha", title="Idem", statement="idempotent claim",
+        tags=["t"], operation_id="op-1",
+    )
+    replay = memory_create(
+        fresh_db, type="gotcha", title="Idem", statement="idempotent claim",
+        tags=["t"], operation_id="op-1",
+    )
+    assert replay.get("replayed") is True
+    assert replay["id"] == first["id"]
+    assert len([i for i in get_all_items(fresh_db) if i.title == "Idem"]) == 1
+
+    other = memory_create(fresh_db, type="gotcha", title="O", statement="other claim", tags=["t"])
+    rel1 = memory_relate(fresh_db, first["id"], other["id"], "depends_on", operation_id="op-2")
+    rel2 = memory_relate(fresh_db, first["id"], other["id"], "depends_on", operation_id="op-2")
+    assert rel2.get("replayed") is True
+    assert rel1["id"] == rel2["id"]
