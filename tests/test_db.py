@@ -231,6 +231,31 @@ def test_schema_version_recorded(fresh_db):
     assert _schema_version(fresh_db) == SCHEMA_VERSION
 
 
+def test_locator_migration_dedupes_and_enforces_unique(fresh_db):
+    from totem_mcp.db import _migrate_locators
+
+    fresh_db.execute("DROP INDEX IF EXISTS memory_locators_path_subject")
+    fresh_db.execute(
+        "CREATE INDEX memory_locators_path_subject ON memory_locators (path, subject)"
+    )
+    fresh_db.execute("INSERT INTO memory_locators VALUES ('a', '/x.py', 'sub', 's')")
+    fresh_db.execute("INSERT INTO memory_locators VALUES ('b', '/x.py', 'sub', 's')")
+    fresh_db.commit()
+
+    _migrate_locators(fresh_db)
+
+    rows = fresh_db.execute(
+        "SELECT item_id FROM memory_locators WHERE path = '/x.py'"
+    ).fetchall()
+    assert len(rows) == 1
+    sql = fresh_db.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'memory_locators_path_subject'"
+    ).fetchone()[0]
+    assert "UNIQUE" in sql.upper()
+    with pytest.raises(Exception):
+        fresh_db.execute("INSERT INTO memory_locators VALUES ('c', '/x.py', 'sub', 's')")
+
+
 def test_legacy_db_migrates_to_current_version(db_path):
     from totem_mcp.db import SCHEMA_VERSION, _schema_version, connect, init_db
 

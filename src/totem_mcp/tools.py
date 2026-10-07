@@ -890,7 +890,25 @@ def register_file_read(
             },
         )
         insert_item(conn, item)
-        upsert_locator(conn, item.id, path, subject, symbol)
+        try:
+            upsert_locator(conn, item.id, path, subject, symbol)
+        except turso.IntegrityError:
+            # Lost a cross-process race for (path, subject): drop our orphan and
+            # let the retry take the update path against the winner.
+            conn.execute("DELETE FROM memory_items WHERE id = ?", (item.id,))
+            return register_file_read(
+                conn,
+                path=path,
+                statement=statement,
+                subject=subject,
+                kind=kind,
+                tags=tags,
+                start_line=start_line,
+                end_line=end_line,
+                title=title,
+                details=details,
+                symbol=symbol,
+            )
         insert_history(conn, item.id, "created", reason="register_file_read", source="register_file_read")
         return {
             "id": item.id,
@@ -1028,7 +1046,24 @@ def register_file_write(
             },
         )
         insert_item(conn, item)
-        upsert_locator(conn, item.id, path, path, symbol)
+        try:
+            upsert_locator(conn, item.id, path, path, symbol)
+        except turso.IntegrityError:
+            # Lost a cross-process race for this path: drop our orphan and let
+            # the retry update the winner.
+            conn.execute("DELETE FROM memory_items WHERE id = ?", (item.id,))
+            return register_file_write(
+                conn,
+                path=path,
+                statement=statement,
+                reason=reason,
+                tags=tags,
+                start_line=start_line,
+                end_line=end_line,
+                title=title,
+                details=details,
+                symbol=symbol,
+            )
         insert_history(conn, item.id, "created", reason=f"register_file_write: {reason}", source="register_file_write")
         return {
             "id": item.id,
