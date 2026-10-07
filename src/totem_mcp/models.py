@@ -75,8 +75,10 @@ class Applicability(str, Enum):
 SCOPE_KINDS = ("user", "project", "path", "task")
 
 # Provenance -> default confidence (used when the caller does not pass one).
+# This is who asserted the claim, NOT whether it is verified. Only an explicit
+# confidence or corroborating evidence reaches the top of the range.
 CONFIDENCE_BY_SOURCE = {
-    "user": 1.0,
+    "user": 0.9,
     "test": 0.95,
     "source": 0.9,
     "git": 0.9,

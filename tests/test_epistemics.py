@@ -21,7 +21,8 @@ def test_confidence_derived_from_provenance(fresh_db):
         statement="The user asserted this claim.", tags=["t"],
         asserted_by="user",
     )
-    assert get_item(fresh_db, user["id"]).confidence == 1.0
+    # Provenance is who asserted, not verification: user sits below test.
+    assert get_item(fresh_db, user["id"]).confidence == 0.9
 
     tested = memory_create(
         fresh_db, type="gotcha", title="Test claim",
@@ -29,6 +30,11 @@ def test_confidence_derived_from_provenance(fresh_db):
         asserted_by="test",
     )
     assert get_item(fresh_db, tested["id"]).confidence == 0.95
+    assert get_item(fresh_db, user["id"]).confidence < get_item(fresh_db, tested["id"]).confidence
+
+    from totem_mcp.models import CONFIDENCE_BY_SOURCE
+
+    assert max(CONFIDENCE_BY_SOURCE.values()) <= 0.95  # 1.0 needs explicit input
 
     explicit = memory_create(
         fresh_db, type="gotcha", title="Explicit",

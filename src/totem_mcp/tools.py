@@ -120,8 +120,10 @@ def memory_create(
 ) -> dict:
     """Create a new memory item (§43 memory_create).
 
-    ``confidence`` defaults from provenance (asserted_by): user 1.0, test 0.95,
+    ``confidence`` defaults from provenance (asserted_by): test 0.95, user/
     source/git/doc 0.9, runtime 0.7, agent 0.6; hypotheses cap at 0.4.
+    ``asserted_by`` is who asserted the claim, not proof it is true; pass an
+    explicit ``confidence`` to reach 1.0.
     """
     if not type or not title or not statement:
         raise ValueError("type, title, and statement are required")

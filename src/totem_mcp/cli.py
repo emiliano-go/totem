@@ -45,11 +45,14 @@ def cli(ctx: click.Context, project: str | None) -> None:
 @click.option("--statement", required=True)
 @click.option("--tags", required=True, help="Comma-separated tags")
 @click.option("--details", default=None)
-@click.option("--confidence", default=1.0, type=float)
+@click.option("--confidence", default=None, type=float, help="Defaults from --asserted-by provenance")
 @click.option("--importance", default=0.5, type=float)
 @click.option("--evidence", default=None, help="JSON array of evidence objects")
 @click.option("--metadata", default=None, help="JSON object of extra metadata")
 @click.option("--related", default=None, help="Comma-separated related memory IDs")
+@click.option("--asserted-by", "asserted_by", default=None, type=click.Choice([
+    "user", "test", "source", "git", "doc", "runtime", "agent",
+]), help="Who asserted the claim (sets default confidence)")
 @click.pass_context
 def create(
     ctx: click.Context,
@@ -58,11 +61,12 @@ def create(
     statement: str,
     tags: str,
     details: str | None,
-    confidence: float,
+    confidence: float | None,
     importance: float,
     evidence: str | None,
     metadata: str | None,
     related: str | None,
+    asserted_by: str | None,
 ) -> None:
     """Create a new memory item."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -79,6 +83,7 @@ def create(
                 evidence=json.loads(evidence) if evidence else None,
                 metadata=json.loads(metadata) if metadata else None,
                 related_memory_ids=[r.strip() for r in related.split(",")] if related else None,
+                asserted_by=asserted_by,
             )
             click.echo(json.dumps(result, indent=2))
         except ValueError as e:
