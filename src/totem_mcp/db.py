@@ -162,6 +162,22 @@ def get_git_root() -> Path | None:
     return None
 
 
+def get_head_commit() -> str | None:
+    """Current git HEAD sha, or None outside a repo. Used as verified_commit."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def get_db_path(project: str | None = None) -> Path:
     if project:
         return Path(project) / ".totem" / "totem.db"

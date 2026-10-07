@@ -20,6 +20,7 @@ from .tools import (
     memory_recent,
     memory_search,
     memory_update,
+    memory_verify,
     resolve_conflict,
     totem_init,
 )
@@ -160,6 +161,32 @@ def delete(ctx: click.Context, item_id: str, reason: str) -> None:
     """Soft-delete a memory item."""
     with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_delete(conn, item_id, reason)
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.argument("item_id")
+@click.option("--method", default=None, help="How it was verified")
+@click.option("--commit", default=None, help="Git commit verified at (default HEAD)")
+@click.option("--confidence", default=1.0, type=float, help="Confidence to set (default 1.0)")
+@click.option("--verified-by", "verified_by", default=None, help="Memory ID holding the verification artifact")
+@click.pass_context
+def verify(
+    ctx: click.Context,
+    item_id: str,
+    method: str | None,
+    commit: str | None,
+    confidence: float,
+    verified_by: str | None,
+) -> None:
+    """Record that a memory was verified."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_verify(
+            conn, item_id, method=method, commit=commit,
+            confidence=confidence, verified_by_id=verified_by,
+        )
+        if result is None:
+            raise click.ClickException(f"Item {item_id} not found")
         click.echo(json.dumps(result, indent=2))
 
 
