@@ -40,7 +40,7 @@ from .db import (
     soft_delete,
     update_item_row,
 )
-from .hashing import check_staleness, hash_content, hash_symbol
+from .hashing import check_staleness, hash_content, hash_symbol, verification_fresh
 from .models import (
     LIMITS,
     SCOPE_KINDS,
@@ -303,6 +303,27 @@ def memory_get(
                 },
             )
             item.status = MemoryStatus.POTENTIALLY_STALE
+        if stale_evidence and item.verified_at:
+            # TMS retraction: the justification (evidence) changed, so the
+            # verification no longer holds. Drop back to provenance confidence.
+            update_item_row(
+                conn,
+                id,
+                {
+                    "verified_at": None,
+                    "verified_commit": None,
+                    "confidence": default_confidence(item.asserted_by),
+                    "updated_at": _now(),
+                },
+            )
+            insert_history(
+                conn, id, "verification_voided", reason="evidence changed",
+                source="memory_get",
+            )
+            item.verified_at = None
+            item.verified_commit = None
+            item.confidence = default_confidence(item.asserted_by)
+            warnings.append("Verification voided: evidence changed since verified")
 
     result = item.model_dump(by_alias=True)
     if warnings:
@@ -472,6 +493,46 @@ def memory_verify(
         insert_relation(conn, id, verified_by_id, "verified_by")
     updated = get_item(conn, id)
     return updated.model_dump(by_alias=True) if updated else None
+
+
+@atomic
+def memory_revalidate(
+    conn: turso.Connection,
+    dry_run: bool = True,
+    actor: str | None = None,
+) -> dict:
+    """Void verifications whose evidence has since changed.
+
+    Scans every verified item; any whose evidence is stale is retracted
+    (verified_at/verified_commit cleared, confidence reset to provenance
+    default). Dry-run is the default and reports candidates only.
+    """
+    rows = conn.execute(
+        "SELECT id FROM memory_items "
+        "WHERE verified_at IS NOT NULL AND status != 'deleted'"
+    ).fetchall()
+    voided: list[str] = []
+    for (item_id,) in rows:
+        item = get_item(conn, item_id)
+        if item is None or verification_fresh(item):
+            continue
+        voided.append(item_id)
+        if not dry_run:
+            update_item_row(
+                conn,
+                item_id,
+                {
+                    "verified_at": None,
+                    "verified_commit": None,
+                    "confidence": default_confidence(item.asserted_by),
+                    "updated_at": _now(),
+                },
+            )
+            insert_history(
+                conn, item_id, "verification_voided", reason="evidence changed",
+                source="memory_revalidate", actor=actor,
+            )
+    return {"dry_run": dry_run, "voided": voided, "count": len(voided)}
 
 
 @atomic
