@@ -67,6 +67,33 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 
 ## How it works
 
+_Project and user memory flow into the context compiler, which hands the agent scored, provenance-aware context._
+
+```
+             ┌─────────────────┐
+             │   User facts    │
+             └────────┬────────┘
+                      │
+             ┌────────▼────────┐
+             │     Project     │
+             │      memory     │
+             └────────┬────────┘
+                      │
+       ┌──────────────┼──────────────┐
+       │              │              │
+   evidence       relations     provenance
+       │              │              │
+       └──────────────┼──────────────┘
+                      │
+             ┌────────▼────────┐
+             │ context compiler│
+             └────────┬────────┘
+                      │
+             ┌────────▼────────┐
+             │      agent      │
+             └─────────────────┘
+```
+
 ```
 Agent reads file for the first time
   → commit-gate blocks → agent registers read → memory stored → done
