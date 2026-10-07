@@ -206,3 +206,41 @@ def test_context_reports_why(fresh_db):
     )
     result = engineering_context(fresh_db, tags=["t"], task="t")
     assert "tag" in result["why"][item["id"]]
+
+
+def test_verified_item_serialized_and_boosted(fresh_db):
+    from totem_mcp.context import _score_item, _serialize_item
+    from totem_mcp.db import get_item
+    from totem_mcp.tools import memory_verify
+
+    a = memory_create(
+        fresh_db, type="gotcha", title="Verified claim",
+        statement="Checked against the code.", tags=["t"],
+    )["id"]
+    b = memory_create(
+        fresh_db, type="gotcha", title="Unverified claim",
+        statement="Not checked yet.", tags=["t"],
+    )["id"]
+    memory_verify(fresh_db, a, commit="abcdef1234")
+
+    ia, ib = get_item(fresh_db, a), get_item(fresh_db, b)
+    assert "Verified:" in _serialize_item(ia)
+    assert "@abcdef1" in _serialize_item(ia)
+    assert "Verified:" not in _serialize_item(ib)
+    assert _score_item(ia, ["t"]) > _score_item(ib, ["t"])
+
+
+def test_stale_verification_labelled(fresh_db, sample_file):
+    from totem_mcp.context import _serialize_item
+    from totem_mcp.db import get_item
+    from totem_mcp.tools import memory_verify, register_file_read
+
+    item = register_file_read(
+        fresh_db, path=str(sample_file), statement="fact", subject="s",
+        kind="function", tags=["t"],
+    )
+    memory_verify(fresh_db, item["id"], commit="abc")
+    sample_file.write_text("changed\n")
+
+    text = _serialize_item(get_item(fresh_db, item["id"]))
+    assert "(verification stale)" in text
