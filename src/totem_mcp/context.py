@@ -16,7 +16,7 @@ from .db import (
     connect,
     get_user_db_path,
 )
-from .hashing import check_staleness
+from .hashing import check_staleness, verification_fresh
 from .models import Conflict, MemoryStatus, MemoryType, scope_kind
 from pathlib import Path
 
@@ -105,6 +105,8 @@ def _score_item(
     if item.type in _BOOSTED_TYPES:
         score *= 1.25
     score *= _scope_boost(item, paths, task_words)
+    if getattr(item, "verified_at", None) and verification_fresh(item):
+        score *= 1.10
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
     return score
@@ -124,6 +126,10 @@ def _serialize_item(item) -> str:
         lines.append(f"  Scope: {kind} ({value})" if value and value != kind else f"  Scope: {kind}")
     if item.asserted_by:
         lines.append(f"  Asserted by: {item.asserted_by}")
+    if getattr(item, "verified_at", None):
+        commit = f" @{item.verified_commit[:7]}" if item.verified_commit else ""
+        suffix = "" if verification_fresh(item) else " (verification stale)"
+        lines.append(f"  Verified: {item.verified_at}{commit}{suffix}")
     if item.applicability:
         lines.append(f"  Applicability: {item.applicability}")
     if item.evidence:
