@@ -219,13 +219,16 @@ def _connect(path: str) -> turso.Connection:
     is held only for the open call, not the connection's lifetime.
     """
     if fcntl is None:
-        return turso.connect(path, experimental_features=_FEATURES)
-    with open(path + ".lock", "a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            return turso.connect(path, experimental_features=_FEATURES)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+        conn = turso.connect(path, experimental_features=_FEATURES)
+    else:
+        with open(path + ".lock", "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                conn = turso.connect(path, experimental_features=_FEATURES)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    conn._totem_path = path
+    return conn
 
 
 @contextmanager
@@ -287,21 +290,40 @@ def _set_schema_version(conn: turso.Connection, version: int) -> None:
 
 
 def init_db(conn: turso.Connection) -> None:
-    """Create/migrate the schema, retrying past cross-process bootstrap races.
+    """Create/migrate the schema, serialized for the first bootstrap.
 
     Every statement is idempotent (IF NOT EXISTS) and ``_migrate`` is atomic, so
-    re-running the whole bootstrap after a Busy error is safe. Two agents
-    starting in the same project at once therefore both end up current.
+    re-running the whole bootstrap after a Busy error is safe. The advisory lock
+    is taken only while the schema is not yet current, so concurrent first runs
+    (two agents in the same project) cannot race the shared-WAL setup or DDL;
+    already-current opens skip it.
     """
+    path = getattr(conn, "_totem_path", None)
+    if fcntl is None or path is None:
+        _init_db_retry(conn)
+        return
+    with open(path + ".lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            # Read the version only inside the lock: a pre-lock read can pin a
+            # snapshot that another process's migration then makes stale.
+            if _schema_version(conn) >= SCHEMA_VERSION:
+                return
+            _init_db_retry(conn)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _init_db_retry(conn: turso.Connection) -> None:
     deadline = time.monotonic() + 5.0
     while True:
         try:
             _init_db_once(conn)
             return
-        except turso.OperationalError as exc:
-            msg = str(exc).lower()
-            if ("busy" not in msg and "locked" not in msg) or time.monotonic() >= deadline:
+        except Exception as exc:
+            if not _is_retryable_lock(exc) or time.monotonic() >= deadline:
                 raise
+            _safe_rollback(conn)
             time.sleep(0.05)
 
 
@@ -320,13 +342,38 @@ def _init_db_once(conn: turso.Connection) -> None:
     conn.commit()
 
 
+def _is_retryable_lock(exc: Exception) -> bool:
+    """True for contention errors worth retrying (Busy/locked/stale snapshot).
+
+    Matches on the type name too: Turso raises a native ``BusySnapshot`` that the
+    DB-API mapping does not expose, so it is not a ``DatabaseError`` subclass.
+    """
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return (
+        "busy" in name
+        or "snapshot" in name
+        or "busy" in msg
+        or "locked" in msg
+        or "snapshot" in msg
+    )
+
+
+def _safe_rollback(conn: turso.Connection) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
 def _begin_write(conn: turso.Connection, timeout_s: float = 5.0) -> None:
     """Begin a write transaction, waiting out cross-process lock contention.
 
     The Turso binding exposes no ``busy_timeout`` and maps its ``Busy`` error to
-    ``OperationalError``, so retry ``BEGIN IMMEDIATE`` here. Taking the write
-    lock up front is what serializes read-then-write composites across processes
-    (a deferred BEGIN would take a read lock, then fail on upgrade).
+    ``OperationalError``; a stale snapshot (another process committed since this
+    connection last read) surfaces as ``BusySnapshot`` -> ``DatabaseError``. Both
+    are retried. Taking the write lock up front is what serializes
+    read-then-write composites across processes.
     """
     deadline = time.monotonic() + timeout_s
     delay = 0.02
@@ -334,12 +381,10 @@ def _begin_write(conn: turso.Connection, timeout_s: float = 5.0) -> None:
         try:
             conn.execute("BEGIN IMMEDIATE")
             return
-        except turso.OperationalError as exc:
-            msg = str(exc).lower()
-            if "busy" not in msg and "locked" not in msg:
+        except Exception as exc:
+            if not _is_retryable_lock(exc) or time.monotonic() >= deadline:
                 raise
-            if time.monotonic() >= deadline:
-                raise
+            _safe_rollback(conn)
             time.sleep(delay)
             delay = min(delay * 2, 0.25)
 
