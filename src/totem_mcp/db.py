@@ -1,4 +1,8 @@
-"""Turso storage layer for totem."""
+"""Turso storage layer for totem.
+
+Single-user by design: the user DB is owned by the OS user running totem (no
+tenancy or authorization). Do not share one user DB across OS users.
+"""
 
 from __future__ import annotations
 

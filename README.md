@@ -270,6 +270,22 @@ totem auto-detects your project root via `git rev-parse --show-toplevel`. Overri
 
 `engineering_context` searches both, with project memories taking precedence.
 
+## Deployment boundary
+
+Totem is a **single-user, local memory layer**. It has no tenancy or
+authorization model, and this is intentional:
+
+- the user DB lives at `~/.local/share/totem/totem.db`, owned by the OS user
+  that runs totem (override with `TOTEM_USER_DB`);
+- the project DB lives in the project's `.totem/` directory, scoped to whoever
+  can read the checkout;
+- MCP tools run with the full privileges of that user.
+
+Do not expose a totem MCP server to multiple untrusted users on one host, and do
+not point several OS users at one shared user DB. If you need multi-user
+isolation, run one totem instance (and one user DB) per user. The boundary is
+enforced by the filesystem and the OS user, not by totem itself.
+
 ## Tag conventions
 
 - `task:<name>`: In-progress work. Query with `memory_tasks_tool`.
