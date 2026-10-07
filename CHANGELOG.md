@@ -48,6 +48,8 @@ hardening on top of the epistemics/evidence work.
   relations and conflict resolutions are recorded.
 - **Idempotency**: writes accept an `operation_id`; a replay returns the stored
   result instead of re-executing.
+- **Deployment boundary**: the single-user, no-tenancy model is documented
+  (README "Deployment boundary" and the `db` module docstring).
 
 ### Memory model (epistemics)
 
@@ -76,7 +78,7 @@ hardening on top of the epistemics/evidence work.
 
 ### Database
 
-- Real schema versioning: a `meta` table with ordered migrations (SCHEMA_VERSION 4); legacy DBs are inferred from columns and stamped. No write when already current.
+- Real schema versioning: a `meta` table with ordered migrations (schema version 8); legacy DBs are inferred from columns and stamped. No write when already current.
 - `TOTEM_USER_DB` overrides the user memory DB path (hosts that keep data in a volume point it at a persistent path; tests isolate it to a temp dir).
 
 ## 0.5.1
