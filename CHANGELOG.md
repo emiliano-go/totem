@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+Hardening release: correctness, transactional integrity, and operational
+hardening on top of the epistemics/evidence work.
+
+### Hardening
+
+- **Evidence correctness**: symbol evidence is now identity + content (a
+  normalized body hash). A symbol whose body materially changed is stale;
+  moved-but-unchanged is fresh; legacy rows without `symbolHash` keep
+  presence-only behaviour.
+- **Atomic writes**: low-level DB helpers no longer commit; every semantic
+  mutation (create/update/delete/relate/import/conflict resolve) runs in one
+  transaction and rolls back on failure.
+- **Validation**: `memory_update` reconstructs and revalidates the item; memory
+  lifecycle transitions are enforced; the same schema invariants apply to
+  create, update, and import.
+- **Hard context budget**: `token_budget` is a hard upper bound; every section
+  is capped and `engineering_context` returns `budget`, `estimatedTokens`, and
+  per-section omitted counts.
+- **Relation integrity**: `UNIQUE(from_id, to_id, kind)`, lookup indexes,
+  self/dangling/cycle rejection, and idempotent duplicates.
+- **Crash-safe migrations**: `BEGIN IMMEDIATE` lock, per-migration transaction,
+  postcondition verification, and no schema-version stamp on failure.
+- **Hook state**: atomic temp+fsync+rename, a private `0700` directory with
+  `0600` files, and a TTL sweep.
+- **Enforcement policy**: `TOTEM_ENFORCEMENT` = `off` | `warn` | `normal` |
+  `strict` controls blocking (`strict` fails closed); fail-open events are
+  logged to the hook state directory.
+- **CI/release gates**: `.github/workflows/ci.yml` (pytest on 3.13/3.14, CLI +
+  MCP startup smoke, build artifacts, npm pack); publishing now depends on CI.
+- **Typed errors**: MCP tools return `{error: {code, message}}` with codes
+  (NOT_FOUND, INVALID_ARGUMENT, SCHEMA_ERROR, CONFLICT, STALE, DB_UNAVAILABLE,
+  MIGRATION_FAILED, INTERNAL).
+- **Restorable imports**: `memory_import` gains `normal`/`strict`/`replace`
+  modes, `--dry-run`, validation before mutation, and a complete report.
+- **Resource limits**: caps on title/statement/details/tags/metadata/evidence,
+  import size, and token budget.
+- **Indexed hot paths**: a `statement_normalized` column and a locator table
+  remove whole-corpus scans from density dedup and file registration.
+- **Conflict relevance**: context only surfaces conflicts touching considered
+  memories or critical classes.
+- **Scope semantics + explainability**: task scope boosts only when it matches
+  the current task; context returns a `why` map for each included memory.
+- **Audit actors**: history records actor/session/source/commit/request_id;
+  relations and conflict resolutions are recorded.
+- **Idempotency**: writes accept an `operation_id`; a replay returns the stored
+  result instead of re-executing.
 
 ### Memory model (epistemics)
 
