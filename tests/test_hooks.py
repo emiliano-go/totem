@@ -16,13 +16,14 @@ REGISTER_READ = "mcp__totem__register_file_read_tool"
 REGISTER_WRITE = "mcp__totem__register_file_write_tool"
 
 
-def run_hook(sub: str, payload: dict) -> subprocess.CompletedProcess:
+def run_hook(sub: str, payload: dict, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(HOOK), sub],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         timeout=20,
+        env={**os.environ, **(env or {})},
     )
 
 
@@ -160,3 +161,40 @@ def test_state_write_is_atomic_and_valid_json(session_id):
     # no leftover temp files in the state dir
     leftovers = [p.name for p in state_path(session_id).parent.glob(".tmp-*")]
     assert leftovers == []
+
+
+def _arm_read_gate(session_id):
+    run_hook("post", {
+        "tool_name": "Read", "tool_input": {"file_path": "/tmp/gate.py"},
+        "session_id": session_id, "cwd": "/tmp",
+    })
+
+
+def test_enforcement_off_never_blocks(session_id):
+    _arm_read_gate(session_id)
+    proc = run_hook("pre", {
+        "tool_name": "Bash", "tool_input": {"command": "ls"},
+        "session_id": session_id, "cwd": "/tmp",
+    }, env={"TOTEM_ENFORCEMENT": "off"})
+    assert _decision(proc) is None  # allowed
+
+
+def test_enforcement_warn_allows_and_warns(session_id):
+    _arm_read_gate(session_id)
+    proc = run_hook("pre", {
+        "tool_name": "Bash", "tool_input": {"command": "ls"},
+        "session_id": session_id, "cwd": "/tmp",
+    }, env={"TOTEM_ENFORCEMENT": "warn"})
+    assert _decision(proc) is None  # advisory: does not block
+    assert "totem:warn" in proc.stderr
+
+
+def test_enforcement_strict_fails_closed_on_bad_payload():
+    proc = subprocess.run(
+        [sys.executable, str(HOOK), "pre"],
+        input="{not valid json",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TOTEM_ENFORCEMENT": "strict"},
+    )
+    assert "deny" in proc.stdout

@@ -33,6 +33,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+# Enforcement policy: off | warn | normal | strict.
+#   off    - never block
+#   warn   - never block, print the would-be denial to stderr
+#   normal - block on gates, fail open on errors (default)
+#   strict - like normal, but fail closed when a check cannot complete
+ENFORCEMENT = os.environ.get("TOTEM_ENFORCEMENT", "normal").strip().lower()
+
 # Sub-commands that search/read file content
 SUBCMDS = re.compile(
     r"^(grep|find|cat|head|tail|wc|sort|uniq|awk|sed|less|more|diff|comm|xargs|file|rg|ag|ack|jq)$"
@@ -291,6 +298,11 @@ def has_memory_for(tool_name: str, tool_input: dict, project_dir: str) -> bool:
 
 
 def deny(reason: str) -> None:
+    if ENFORCEMENT in ("off", "warn"):
+        # Advisory modes never block; warn surfaces the would-be denial.
+        if ENFORCEMENT == "warn":
+            print(f"[totem:warn] {reason}", file=sys.stderr)
+        sys.exit(0)
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -303,6 +315,25 @@ def deny(reason: str) -> None:
 
 def allow() -> None:
     sys.exit(0)
+
+
+def _log_fail_open(reason: str) -> None:
+    """Record that enforcement could not run (observability)."""
+    try:
+        path = get_state_dir() / "enforcement.log"
+        with open(path, "a") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} fail_open: {reason}\n")
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def fail_open(reason: str) -> None:
+    """A check could not complete: strict denies, otherwise allow and log."""
+    _log_fail_open(reason)
+    if ENFORCEMENT == "strict":
+        deny(f"totem enforcement could not complete ({reason}); strict mode blocks.")
+    allow()
 
 
 # ── Subcommands ───────────────────────────────────────────────────
@@ -371,7 +402,7 @@ def cmd_pre(payload: dict) -> None:
             allow()  # Already blocked once this turn; agent checked memory.
         with hook_lock(session_id) as acquired:
             if not acquired:
-                allow()  # Another hook invocation is mid-search; fail open.
+                fail_open("lock unavailable")  # another hook invocation is mid-search
             has_memory = has_memory_for(tool_name, tool_input, project_dir)
         if has_memory:
             state.setdefault("searched", {})[search_key] = True
@@ -431,13 +462,14 @@ def cmd_clear(payload: dict) -> None:
 
 
 def main() -> None:
+    if ENFORCEMENT == "off":
+        sys.exit(0)  # policy: never block
     if len(sys.argv) < 2 or sys.argv[1] not in ("pre", "post", "clear"):
-        sys.exit(0)  # Unknown usage → fail open
-
+        fail_open("unknown usage")
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:
-        sys.exit(0)
+        fail_open("malformed payload")
 
     {"pre": cmd_pre, "post": cmd_post, "clear": cmd_clear}[sys.argv[1]](payload)
 
