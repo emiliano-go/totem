@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 # Hard resource limits: an agent must not be able to persist an unbounded blob.
 LIMITS = {

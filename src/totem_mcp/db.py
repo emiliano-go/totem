@@ -15,7 +15,7 @@ import turso
 
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     statement TEXT NOT NULL,
+    statement_normalized TEXT,
     details TEXT,
     tags TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'active',
@@ -81,10 +82,38 @@ CREATE INDEX IF NOT EXISTS memory_relations_from ON memory_relations (from_id);
 CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations (to_id);
 """
 
+CREATE_ITEM_INDEXES = """
+CREATE INDEX IF NOT EXISTS memory_items_stmt_norm ON memory_items (statement_normalized);
+"""
+
+# Locators: indexed retrieval of implementation memories by (path, subject) so
+# registration never scans the whole corpus.
+CREATE_LOCATORS = """
+CREATE TABLE IF NOT EXISTS memory_locators (
+    item_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    subject TEXT,
+    symbol TEXT,
+    PRIMARY KEY (item_id, path)
+);
+"""
+CREATE_LOCATORS_INDEXES = """
+CREATE INDEX IF NOT EXISTS memory_locators_path_subject ON memory_locators (path, subject);
+CREATE INDEX IF NOT EXISTS memory_locators_path_symbol ON memory_locators (path, symbol);
+"""
+
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+"""
+
+CREATE_OPERATIONS = """
+CREATE TABLE IF NOT EXISTS memory_operations (
+    op_id TEXT PRIMARY KEY,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -97,6 +126,11 @@ CREATE TABLE IF NOT EXISTS memory_history (
     old_value TEXT,
     new_value TEXT,
     reason TEXT,
+    actor TEXT,
+    session TEXT,
+    source TEXT,
+    commit_sha TEXT,
+    request_id TEXT,
     timestamp TEXT NOT NULL
 );
 """
@@ -211,7 +245,10 @@ def init_db(conn: turso.Connection) -> None:
     conn.executescript(CREATE_HISTORY)
     conn.executescript(CREATE_RELATIONS)
     conn.executescript(CREATE_RELATIONS_INDEXES)
+    conn.executescript(CREATE_LOCATORS)
+    conn.executescript(CREATE_LOCATORS_INDEXES)
     conn.executescript(CREATE_META)
+    conn.executescript(CREATE_OPERATIONS)
     _migrate(conn)
     conn.commit()
 
@@ -256,6 +293,13 @@ def _columns(conn: turso.Connection, table: str) -> set[str]:
 def _has_index(conn: turso.Connection, name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _has_table(conn: turso.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
     ).fetchone()
     return row is not None
 
@@ -315,11 +359,87 @@ def _migrate_relations(conn: turso.Connection) -> None:
     )
 
 
+def _normalize_statement(statement: str) -> str:
+    return " ".join((statement or "").lower().split())
+
+
+def _migrate_history_audit(conn: turso.Connection) -> None:
+    """v7: actor/session/source/commit/request_id on memory_history."""
+    _add_columns(
+        conn,
+        "memory_history",
+        [
+            ("actor", "actor TEXT"),
+            ("session", "session TEXT"),
+            ("source", "source TEXT"),
+            ("commit_sha", "commit_sha TEXT"),
+            ("request_id", "request_id TEXT"),
+        ],
+    )
+
+
+def _migrate_operations(conn: turso.Connection) -> None:
+    """v8: idempotency operations table."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_operations ("
+        "op_id TEXT PRIMARY KEY, result TEXT NOT NULL, created_at TEXT NOT NULL)"
+    )
+
+
+def _migrate_indexes(conn: turso.Connection) -> None:
+    """v6: statement_normalized column + locator table, with backfill."""
+    _add_columns(
+        conn, "memory_items", [("statement_normalized", "statement_normalized TEXT")]
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_locators ("
+        "item_id TEXT NOT NULL, path TEXT NOT NULL, subject TEXT, symbol TEXT, "
+        "PRIMARY KEY (item_id, path))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS memory_locators_path_subject "
+        "ON memory_locators (path, subject)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS memory_locators_path_symbol "
+        "ON memory_locators (path, symbol)"
+    )
+    for item_id, statement in conn.execute(
+        "SELECT id, statement FROM memory_items"
+    ).fetchall():
+        conn.execute(
+            "UPDATE memory_items SET statement_normalized = ? WHERE id = ?",
+            (_normalize_statement(statement), item_id),
+        )
+    for item_id, meta_json in conn.execute(
+        "SELECT id, metadata FROM memory_items "
+        "WHERE type = 'implementation' AND status != 'deleted'"
+    ).fetchall():
+        try:
+            meta = json.loads(meta_json) if meta_json else {}
+        except ValueError:
+            meta = {}
+        path = meta.get("path")
+        if path:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_locators (item_id, path, subject, symbol) "
+                "VALUES (?, ?, ?, ?)",
+                (item_id, path, meta.get("subject"), meta.get("symbol")),
+            )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS memory_items_stmt_norm "
+        "ON memory_items (statement_normalized)"
+    )
+
+
 MIGRATIONS = [
     (2, _migrate_conflicts),
     (3, _migrate_v3),
     (4, _migrate_epistemics),
     (5, _migrate_relations),
+    (6, _migrate_indexes),
+    (7, _migrate_history_audit),
+    (8, _migrate_operations),
 ]
 
 
@@ -337,6 +457,24 @@ def _verify_migration(conn: turso.Connection, target: int) -> None:
             if _has_index(conn, "memory_relations_unique")
             else {"memory_relations_unique"}
         )
+    elif target == 6:
+        missing = set()
+        if "statement_normalized" not in _columns(conn, "memory_items"):
+            missing.add("statement_normalized")
+        if not _has_index(conn, "memory_items_stmt_norm"):
+            missing.add("memory_items_stmt_norm")
+        if not _has_table(conn, "memory_locators"):
+            missing.add("memory_locators")
+    elif target == 7:
+        missing = {
+            "actor",
+            "session",
+            "source",
+            "commit_sha",
+            "request_id",
+        } - _columns(conn, "memory_history")
+    elif target == 8:
+        missing = set() if _has_table(conn, "memory_operations") else {"memory_operations"}
     else:
         missing = set()
     if missing:
@@ -417,16 +555,17 @@ def _row_to_item(row: tuple) -> MemoryItem:
 def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
     conn.execute(
         """INSERT INTO memory_items
-           (id, type, title, statement, details, tags, status, confidence,
-            importance, scope, evidence, related_memory_ids, created_at, updated_at,
-            verified_at, verified_commit, metadata, schema_version,
+           (id, type, title, statement, statement_normalized, details, tags, status,
+            confidence, importance, scope, evidence, related_memory_ids, created_at,
+            updated_at, verified_at, verified_commit, metadata, schema_version,
             asserted_by, applicability)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item.id,
             item.type.value,
             item.title,
             item.statement,
+            _normalize_statement(item.statement),
             item.details,
             json.dumps(item.tags),
             item.status.value,
@@ -455,14 +594,20 @@ def insert_history(
     old_value: str | None = None,
     new_value: str | None = None,
     reason: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    source: str | None = None,
+    commit: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Append an immutable history event for audit trail."""
     from datetime import datetime, timezone
 
     conn.execute(
         """INSERT INTO memory_history
-           (id, item_id, event, field, old_value, new_value, reason, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, item_id, event, field, old_value, new_value, reason,
+            actor, session, source, commit_sha, request_id, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             str(uuid.uuid4()),
             item_id,
@@ -471,6 +616,11 @@ def insert_history(
             old_value,
             new_value,
             reason,
+            actor,
+            session,
+            source,
+            commit,
+            request_id,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -493,6 +643,8 @@ def update_item_row(
 ) -> None:
     if not fields:
         return
+    if "statement" in fields:
+        fields = {**fields, "statement_normalized": _normalize_statement(fields["statement"])}
     set_clauses = []
     values = []
     for key, val in fields.items():
@@ -763,6 +915,50 @@ def find_by_title(conn: turso.Connection, title: str) -> MemoryItem | None:
     return _row_to_item(row)
 
 
+def find_by_statement_normalized(
+    conn: turso.Connection, statement: str
+) -> MemoryItem | None:
+    """Find a non-deleted item whose normalized statement matches (density dedup)."""
+    row = conn.execute(
+        f"SELECT {ITEM_COLS} FROM memory_items "
+        "WHERE statement_normalized = ? AND status != 'deleted' LIMIT 1",
+        (_normalize_statement(statement),),
+    ).fetchone()
+    return _row_to_item(row) if row is not None else None
+
+
+def upsert_locator(
+    conn: turso.Connection,
+    item_id: str,
+    path: str,
+    subject: str | None = None,
+    symbol: str | None = None,
+) -> None:
+    """Index an implementation memory by (path, subject) for O(1) lookup."""
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_locators (item_id, path, subject, symbol) "
+        "VALUES (?, ?, ?, ?)",
+        (item_id, path, subject, symbol),
+    )
+
+
+def find_locator_item(conn: turso.Connection, path: str, subject: str) -> str | None:
+    """item_id for an implementation memory at (path, subject), or None."""
+    row = conn.execute(
+        "SELECT item_id FROM memory_locators WHERE path = ? AND subject = ? LIMIT 1",
+        (path, subject),
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def find_locator_item_by_path(conn: turso.Connection, path: str) -> str | None:
+    """item_id for the implementation memory at path (write path), or None."""
+    row = conn.execute(
+        "SELECT item_id FROM memory_locators WHERE path = ? LIMIT 1", (path,)
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
 def find_same_title_different_statement(
     conn: turso.Connection, title: str, statement: str, item_type: str, exclude_id: str
 ) -> list[MemoryItem]:
@@ -980,7 +1176,8 @@ def get_all_relations(conn: turso.Connection) -> list[dict]:
 def get_history(conn: turso.Connection, item_id: str) -> list[dict]:
     """Immutable history events for one memory, oldest first."""
     rows = conn.execute(
-        "SELECT id, item_id, event, field, old_value, new_value, reason, timestamp "
+        "SELECT id, item_id, event, field, old_value, new_value, reason, "
+        "actor, session, source, commit_sha, request_id, timestamp "
         "FROM memory_history WHERE item_id = ? ORDER BY timestamp, id",
         (item_id,),
     ).fetchall()
@@ -993,7 +1190,36 @@ def get_history(conn: turso.Connection, item_id: str) -> list[dict]:
             "old_value": r[4],
             "new_value": r[5],
             "reason": r[6],
-            "timestamp": r[7],
+            "actor": r[7],
+            "session": r[8],
+            "source": r[9],
+            "commit": r[10],
+            "request_id": r[11],
+            "timestamp": r[12],
         }
         for r in rows
     ]
+
+
+def get_operation(conn: turso.Connection, op_id: str) -> dict | None:
+    """Stored result for an idempotent operation, or None."""
+    row = conn.execute(
+        "SELECT result FROM memory_operations WHERE op_id = ?", (op_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row[0])
+    except ValueError:
+        return None
+
+
+def put_operation(conn: turso.Connection, op_id: str, result) -> None:
+    """Record an operation's result so a replay returns it instead of redoing."""
+    from datetime import datetime, timezone
+
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_operations (op_id, result, created_at) "
+        "VALUES (?, ?, ?)",
+        (op_id, json.dumps(result, default=str), datetime.now(timezone.utc).isoformat()),
+    )
