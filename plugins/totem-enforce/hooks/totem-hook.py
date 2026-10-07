@@ -187,13 +187,11 @@ def hook_lock(session_id: str):
 # ── Memory check ──────────────────────────────────────────────────
 
 
-def totem_search_any(terms: list[str], project_dir: str, *, types: str | None = None,
-                     tags: str | None = None) -> bool:
-    """Return True if totem has at least one memory matching ANY term.
+def totem_search_items(terms: list[str], project_dir: str, *, types: str | None = None,
+                       tags: str | None = None, limit: int = 5) -> list | None:
+    """Parsed `totem search` results, or None when the CLI cannot be run.
 
-    Batches terms into a single FTS5 OR query: one `totem search` subprocess
-    per tool call, instead of one per word (which swamped the process table
-    under parallel agent tool calls when nothing matched).
+    Batches terms into a single FTS5 OR query: one subprocess per call.
     """
     clean: list[str] = []
     for term in terms:
@@ -201,23 +199,28 @@ def totem_search_any(terms: list[str], project_dir: str, *, types: str | None = 
         if term and term not in clean:
             clean.append(term)
     if not clean:
-        return False
+        return []
     query = " OR ".join(f'"{t}"' for t in clean[:MAX_SEARCH_TERMS])
     try:
         # --project is a group-level option: it must precede the subcommand.
         cmd = ["totem", "--project", project_dir, "search",
-               "--query", query, "--limit", "1"]
+               "--query", query, "--limit", str(limit)]
         if types:
             cmd.extend(["--types", types])
         if tags:
             cmd.extend(["--tags", tags])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
-            return False
-        items = json.loads(result.stdout) if result.stdout.strip() else []
-        return len(items) > 0
+            return None
+        return json.loads(result.stdout) if result.stdout.strip() else []
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-        return False  # Fail open
+        return None  # CLI unavailable
+
+
+def totem_search_any(terms: list[str], project_dir: str, *, types: str | None = None,
+                     tags: str | None = None) -> bool:
+    """Return True if totem has at least one memory matching ANY term."""
+    return bool(totem_search_items(terms, project_dir, types=types, tags=tags, limit=1))
 
 
 def totem_search(query: str, project_dir: str, *, types: str | None = None,
@@ -269,6 +272,30 @@ def has_verify_memory(file_path: str, project_dir: str) -> bool:
         )
     except Exception:
         return False
+
+
+def verification_recorded(file_path: str, project_dir: str, tags: list) -> bool:
+    """True when a read's verify tag is backed by a real verification record.
+
+    Requires a ``verify`` tag and, when the totem CLI is available, a matching
+    invariant/constraint with ``verifiedAt`` set. Falls back to tag presence
+    when the CLI cannot be run (fail open, like the rest of the hook).
+    """
+    if not any(str(t).startswith("verify") for t in tags):
+        return False
+    base = Path(file_path).name
+    items: list = []
+    for tag in (f"verify:{base}", f"verify:{file_path}"):
+        found = totem_search_items(
+            [base, file_path], project_dir, types="invariant,constraint",
+            tags=tag, limit=5,
+        )
+        if found is None:
+            return True  # CLI unavailable: fall back to tag presence
+        items.extend(found)
+    if not items:
+        return True  # no record surfaced: fall back to tag presence
+    return any(item.get("verifiedAt") for item in items)
 
 
 def has_memory_for(tool_name: str, tool_input: dict, project_dir: str) -> bool:
@@ -353,11 +380,11 @@ def cmd_pre(payload: dict) -> None:
         pending_verify = state.get("pending_verify", {})
         if path and pending_verify.get(path):
             tags = tool_input.get("tags") or []
-            if not any(str(tag).startswith("verify") for tag in tags):
+            if not verification_recorded(path, project_dir, tags):
                 deny(
-                    f"{path} has an invariant/constraint tagged verify. Record the "
-                    f"verification by calling register_file_read_tool with tags "
-                    f"including 'verify:{path}'."
+                    f"{path} has an invariant/constraint tagged verify. Verify it "
+                    f"(call memory_verify_tool on the memory) and register the read "
+                    f"with tags including 'verify:{path}'."
                 )
             pending_verify.pop(path, None)
         if path:
