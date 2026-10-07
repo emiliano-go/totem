@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,9 +18,14 @@ from typing import Any
 
 import turso
 
+try:
+    import fcntl
+except ImportError:  # non-POSIX: multiprocess locking is best-effort
+    fcntl = None
+
 from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -102,7 +108,7 @@ CREATE TABLE IF NOT EXISTS memory_locators (
 );
 """
 CREATE_LOCATORS_INDEXES = """
-CREATE INDEX IF NOT EXISTS memory_locators_path_subject ON memory_locators (path, subject);
+CREATE UNIQUE INDEX IF NOT EXISTS memory_locators_path_subject ON memory_locators (path, subject);
 CREATE INDEX IF NOT EXISTS memory_locators_path_symbol ON memory_locators (path, symbol);
 """
 
@@ -177,11 +183,33 @@ def get_user_db_path() -> Path:
     return Path.home() / ".local" / "share" / "totem" / "totem.db"
 
 
+_FEATURES = "index_method,multiprocess_wal"
+
+
 def connect(db_path: Path | None = None, project: str | None = None) -> turso.Connection:
     path = db_path or get_db_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = turso.connect(str(path), experimental_features="index_method")
-    return conn
+    return _connect(str(path))
+
+
+def _connect(path: str) -> turso.Connection:
+    """Open a DB, serializing the first open so the shared WAL is created once.
+
+    ``multiprocess_wal`` lets several agent processes share one project DB.
+    Without it Turso takes an exclusive file lock per process and the second
+    opener fails with "File is locked by another process". Creating the shared
+    WAL coordination is itself racy across processes (magic mismatch / smaller
+    than coordination file), so guard the open with an advisory lock. The lock
+    is held only for the open call, not the connection's lifetime.
+    """
+    if fcntl is None:
+        return turso.connect(path, experimental_features=_FEATURES)
+    with open(path + ".lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return turso.connect(path, experimental_features=_FEATURES)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -243,6 +271,25 @@ def _set_schema_version(conn: turso.Connection, version: int) -> None:
 
 
 def init_db(conn: turso.Connection) -> None:
+    """Create/migrate the schema, retrying past cross-process bootstrap races.
+
+    Every statement is idempotent (IF NOT EXISTS) and ``_migrate`` is atomic, so
+    re-running the whole bootstrap after a Busy error is safe. Two agents
+    starting in the same project at once therefore both end up current.
+    """
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            _init_db_once(conn)
+            return
+        except turso.OperationalError as exc:
+            msg = str(exc).lower()
+            if ("busy" not in msg and "locked" not in msg) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+def _init_db_once(conn: turso.Connection) -> None:
     conn.executescript(CREATE_TABLE)
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
@@ -257,6 +304,30 @@ def init_db(conn: turso.Connection) -> None:
     conn.commit()
 
 
+def _begin_write(conn: turso.Connection, timeout_s: float = 5.0) -> None:
+    """Begin a write transaction, waiting out cross-process lock contention.
+
+    The Turso binding exposes no ``busy_timeout`` and maps its ``Busy`` error to
+    ``OperationalError``, so retry ``BEGIN IMMEDIATE`` here. Taking the write
+    lock up front is what serializes read-then-write composites across processes
+    (a deferred BEGIN would take a read lock, then fail on upgrade).
+    """
+    deadline = time.monotonic() + timeout_s
+    delay = 0.02
+    while True:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            return
+        except turso.OperationalError as exc:
+            msg = str(exc).lower()
+            if "busy" not in msg and "locked" not in msg:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
 @contextmanager
 def transaction(conn: turso.Connection):
     """Run a block atomically; commit on success, roll back on any exception.
@@ -268,7 +339,7 @@ def transaction(conn: turso.Connection):
     if getattr(conn, "in_transaction", False):
         yield conn
         return
-    conn.execute("BEGIN")
+    _begin_write(conn)
     try:
         yield conn
     except BaseException:
@@ -390,6 +461,19 @@ def _migrate_operations(conn: turso.Connection) -> None:
     )
 
 
+def _migrate_locators(conn: turso.Connection) -> None:
+    """v9: locator identity is (path, subject); enforce it uniquely."""
+    conn.execute(
+        "DELETE FROM memory_locators WHERE rowid NOT IN "
+        "(SELECT MIN(rowid) FROM memory_locators GROUP BY path, subject)"
+    )
+    conn.execute("DROP INDEX IF EXISTS memory_locators_path_subject")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS memory_locators_path_subject "
+        "ON memory_locators (path, subject)"
+    )
+
+
 def _migrate_indexes(conn: turso.Connection) -> None:
     """v6: statement_normalized column + locator table, with backfill."""
     _add_columns(
@@ -444,6 +528,7 @@ MIGRATIONS = [
     (6, _migrate_indexes),
     (7, _migrate_history_audit),
     (8, _migrate_operations),
+    (9, _migrate_locators),
 ]
 
 
@@ -479,6 +564,16 @@ def _verify_migration(conn: turso.Connection, target: int) -> None:
         } - _columns(conn, "memory_history")
     elif target == 8:
         missing = set() if _has_table(conn, "memory_operations") else {"memory_operations"}
+    elif target == 9:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'memory_locators_path_subject'"
+        ).fetchone()
+        missing = (
+            set()
+            if row and "UNIQUE" in (row[0] or "").upper()
+            else {"memory_locators_path_subject"}
+        )
     else:
         missing = set()
     if missing:
@@ -500,7 +595,7 @@ def _migrate(conn: turso.Connection) -> None:
     owns = not getattr(conn, "in_transaction", False)
     if owns:
         try:
-            conn.execute("BEGIN IMMEDIATE")  # cross-process write lock
+            _begin_write(conn)  # cross-process write lock
         except Exception:
             conn.execute("BEGIN")
     try:
@@ -940,8 +1035,10 @@ def upsert_locator(
 ) -> None:
     """Index an implementation memory by (path, subject) for O(1) lookup."""
     conn.execute(
-        "INSERT OR REPLACE INTO memory_locators (item_id, path, subject, symbol) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO memory_locators (item_id, path, subject, symbol) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(item_id, path) DO UPDATE SET "
+        "subject = excluded.subject, symbol = excluded.symbol",
         (item_id, path, subject, symbol),
     )
 
