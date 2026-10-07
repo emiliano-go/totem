@@ -120,3 +120,36 @@ def test_revalidate_dry_run_then_apply(fresh_db, sample_file):
     assert applied["count"] == 1
     assert get_item(fresh_db, item_id).verified_at is None
     assert memory_revalidate(fresh_db, dry_run=False)["count"] == 0
+
+
+def test_bug_reaching_verified_stamps_verification(fresh_db):
+    from totem_mcp.tools import memory_update
+
+    bug = memory_create(
+        fresh_db, type="bug", title="Crash on empty input",
+        statement="Empty input crashes the parser.", tags=["bug"],
+        metadata={"symptom": "panic", "severity": "high", "state": "open"},
+    )["id"]
+    for state in ("confirmed", "fixed", "verified"):
+        memory_update(fresh_db, bug, metadata={"symptom": "panic", "severity": "high", "state": state})
+
+    stored = get_item(fresh_db, bug)
+    assert stored.verified_at is not None
+
+
+def test_export_import_preserves_verification(fresh_db, tmp_path):
+    from totem_mcp.db import connect, init_db
+    from totem_mcp.tools import memory_export, memory_import
+
+    item_id = _item(fresh_db)
+    memory_verify(fresh_db, item_id, method="pytest", commit="cafe")
+
+    data = memory_export(fresh_db)
+
+    other = connect(db_path=tmp_path / "other.db")
+    init_db(other)
+    memory_import(other, data, mode="replace")
+
+    stored = get_item(other, item_id)
+    assert stored.verified_at is not None
+    assert stored.verified_commit == "cafe"

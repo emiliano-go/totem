@@ -70,3 +70,15 @@ def test_gc_skips_items_with_inbound_relations(fresh_db):
 
     assert keeper not in result["candidates"]
     assert result["count"] == 0
+
+
+def test_gc_skips_verified_items(fresh_db):
+    from totem_mcp.tools import memory_verify
+
+    item_id = _make(fresh_db, "superseded", _old(), "verified superseded")
+    memory_verify(fresh_db, item_id)
+
+    result = memory_gc(fresh_db, retention_days=90, dry_run=True)
+
+    assert item_id not in result["candidates"]
+    assert result["count"] == 0

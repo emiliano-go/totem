@@ -412,6 +412,10 @@ def memory_update(
                     )
         changes.append(("metadata", old_meta, json.dumps(metadata)))
         fields["metadata"] = json.dumps(metadata)
+        # Reaching bug state "verified" is a verification: stamp it.
+        if item.type == MemoryType.BUG and metadata.get("state") == "verified":
+            fields["verified_at"] = fields["updated_at"]
+            fields["verified_commit"] = get_head_commit()
 
     # Reconstruct the resulting item and validate it exactly like create/import
     # do, so update cannot produce a state create would reject.
@@ -679,6 +683,7 @@ def memory_gc(
         "SELECT id FROM memory_items "
         "WHERE status IN ('superseded', 'invalidated', 'resolved') "
         "AND updated_at < ? "
+        "AND verified_at IS NULL "
         "AND id NOT IN (SELECT to_id FROM memory_relations) "
         "ORDER BY updated_at",
         (cutoff,),
