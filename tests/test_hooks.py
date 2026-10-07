@@ -198,3 +198,47 @@ def test_enforcement_strict_fails_closed_on_bad_payload():
         env={**os.environ, "TOTEM_ENFORCEMENT": "strict"},
     )
     assert "deny" in proc.stdout
+
+
+def _fake_totem_dir(tmp_path: Path) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    script = bindir / "totem"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os\n"
+        "verified = os.environ.get('FAKE_VERIFIED') == '1'\n"
+        "print(json.dumps([{'verifiedAt': '2026-01-01T00:00:00Z' if verified else None}]))\n"
+    )
+    script.chmod(0o755)
+    return bindir
+
+
+def test_verify_tag_requires_verified_record(session_id, tmp_path):
+    bindir = _fake_totem_dir(tmp_path)
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+
+    state_path(session_id).write_text(json.dumps({
+        "searched": {}, "pending_reads": {"/tmp/v.py": True},
+        "pending_writes": {}, "pending_verify": {"/tmp/v.py": True},
+    }))
+    payload = {
+        "tool_name": REGISTER_READ,
+        "tool_input": {"path": "/tmp/v.py", "tags": ["verify:/tmp/v.py"]},
+        "session_id": session_id, "cwd": "/tmp",
+    }
+
+    # Memory exists but is not verified: deny even with the tag.
+    denied = _decision(run_hook("pre", payload, env=env))
+    assert denied["permissionDecision"] == "deny"
+    assert "memory_verify" in denied["permissionDecisionReason"]
+
+    # Verified memory: allow and clear the gate.
+    state_path(session_id).write_text(json.dumps({
+        "searched": {}, "pending_reads": {"/tmp/v.py": True},
+        "pending_writes": {}, "pending_verify": {"/tmp/v.py": True},
+    }))
+    allowed = run_hook("pre", payload, env={**env, "FAKE_VERIFIED": "1"})
+    assert _decision(allowed) is None
+    state = json.loads(state_path(session_id).read_text())
+    assert state["pending_verify"] == {}
