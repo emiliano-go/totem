@@ -23,6 +23,7 @@ from .tools import (
     memory_import,
     memory_list,
     memory_recent,
+    memory_revalidate,
     memory_search,
     memory_update,
     memory_verify,
@@ -313,6 +314,26 @@ def memory_verify_tool(
             )
             if result is None:
                 return not_found(f"Item {id} not found")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_revalidate_tool(
+    dry_run: bool = True,
+    project: str | None = None,
+    actor: str | None = None,
+) -> str:
+    """Void verifications whose evidence changed since they were made.
+
+    Args:
+        dry_run: Report candidates without changing them (default True)
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = memory_revalidate(conn, dry_run=dry_run, actor=actor)
             return json.dumps(result, indent=2)
         except Exception as e:
             return error_response(e)

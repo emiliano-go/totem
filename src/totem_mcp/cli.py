@@ -18,6 +18,7 @@ from .tools import (
     memory_import,
     memory_list,
     memory_recent,
+    memory_revalidate,
     memory_search,
     memory_update,
     memory_verify,
@@ -187,6 +188,16 @@ def verify(
         )
         if result is None:
             raise click.ClickException(f"Item {item_id} not found")
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.command()
+@click.option("--apply", "apply_", is_flag=True, help="Void stale verifications (default: dry-run)")
+@click.pass_context
+def revalidate(ctx: click.Context, apply_: bool) -> None:
+    """Void verifications whose evidence changed."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_revalidate(conn, dry_run=not apply_)
         click.echo(json.dumps(result, indent=2))
 
 

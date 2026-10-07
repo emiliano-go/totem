@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from totem_mcp.db import get_item
-from totem_mcp.tools import memory_create, memory_delete, memory_verify
+from totem_mcp.tools import (
+    memory_create,
+    memory_delete,
+    memory_get,
+    memory_revalidate,
+    memory_verify,
+    register_file_read,
+)
 
 
 def _item(conn, title="claim"):
@@ -70,3 +77,46 @@ def test_verify_missing_and_deleted(fresh_db):
     memory_delete(fresh_db, item_id, "obsolete")
     # get_item hides deleted rows, so a deleted item reads as not found.
     assert memory_verify(fresh_db, item_id) is None
+
+
+def _verified_file(conn, sample_file):
+    item = register_file_read(
+        conn, path=str(sample_file), statement="fact", subject="s",
+        kind="function", tags=["v"],
+    )
+    memory_verify(conn, item["id"], commit="abc")
+    return item["id"]
+
+
+def test_get_voids_verification_when_evidence_changes(fresh_db, sample_file):
+    item_id = _verified_file(fresh_db, sample_file)
+    sample_file.write_text("totally different content\n")
+
+    result = memory_get(fresh_db, item_id)
+
+    assert result["verifiedAt"] is None
+    assert result["confidence"] == 0.6  # reset to agent provenance default
+    assert any("Verification voided" in w for w in result.get("warnings", []))
+
+
+def test_fresh_verification_survives_get(fresh_db, sample_file):
+    item_id = _verified_file(fresh_db, sample_file)
+
+    result = memory_get(fresh_db, item_id)
+
+    assert result["verifiedAt"] is not None
+    assert result["confidence"] == 1.0
+
+
+def test_revalidate_dry_run_then_apply(fresh_db, sample_file):
+    item_id = _verified_file(fresh_db, sample_file)
+    sample_file.write_text("changed again\n")
+
+    dry = memory_revalidate(fresh_db, dry_run=True)
+    assert dry["count"] == 1 and item_id in dry["voided"]
+    assert get_item(fresh_db, item_id).verified_at is not None  # untouched
+
+    applied = memory_revalidate(fresh_db, dry_run=False)
+    assert applied["count"] == 1
+    assert get_item(fresh_db, item_id).verified_at is None
+    assert memory_revalidate(fresh_db, dry_run=False)["count"] == 0

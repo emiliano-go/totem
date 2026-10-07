@@ -150,3 +150,26 @@ def check_staleness(
     if content is None:
         return True
     return hash_content(content) != stored_hash
+
+
+def verification_fresh(item) -> bool:
+    """True only while a verification's justification still holds.
+
+    Truth-maintenance idea: evidence is the premise, the verification the
+    derived belief. If any evidence is stale, the verification is no longer
+    valid and should be retracted.
+    """
+    if not getattr(item, "verified_at", None):
+        return False
+    for ev in getattr(item, "evidence", None) or []:
+        if check_staleness(
+            Path(ev.path),
+            ev.start_line,
+            ev.end_line,
+            ev.content_hash,
+            symbol=ev.symbol,
+            blob_hash=ev.blob_hash,
+            symbol_hash=ev.symbol_hash,
+        ):
+            return False
+    return True
