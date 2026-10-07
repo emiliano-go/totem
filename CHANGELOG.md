@@ -2,13 +2,28 @@
 
 ## Unreleased
 
+### Verification
+
+- `memory_verify` (`totem verify`): records `verified_at` + `verified_commit`
+  (HEAD by default), raises confidence to `1.0` (verification, not provenance,
+  earns top trust), writes a history event, optional `verified_by` relation.
+- Verification freshness: a verification holds only while its evidence matches;
+  `memory_get` retracts a stale verification (confidence back to provenance
+  default) and `memory_revalidate` (`totem revalidate`) scans for stale ones.
+- Context shows `Verified: <date> @<commit>` and boosts fresh verifications;
+  stale ones are labelled.
+- Enforcement `verify:<file>` gate now clears only when a fresh verification
+  record exists.
+- Bugs reaching the `verified` state are stamped; GC never purges verified
+  items; export/import preserves verification.
+
 ### Concurrency
 
 - Turso `multiprocess_wal` plus a serialized first open: several agent
   processes can share one project DB (previously the second opener failed with
   "File is locked by another process").
 - Write transactions use `BEGIN IMMEDIATE` with bounded retry; `init_db`
-  retries its idempotent bootstrap.
+  retries its idempotent bootstrap and avoids a stale-snapshot race.
 - `memory_locators` identity is UNIQUE `(path, subject)` (schema v9, with
   dedupe); `register_file_read`/`write` recover from a lost locator race.
 - New `tests/test_concurrency.py`: real multi-process tests for concurrent

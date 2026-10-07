@@ -55,7 +55,7 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **32 MCP tools** (17 core + 15 typed wrappers)
+- **34 MCP tools** (19 core + 15 typed wrappers)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
@@ -214,7 +214,7 @@ totem import backup.json
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (32)
+## MCP tools (34)
 
 | Tool | Description |
 |------|-------------|
@@ -233,12 +233,14 @@ totem import backup.json
 | `memory_export_tool` | Export all memories as JSON |
 | `memory_import_tool` | Import memories from JSON (skips duplicates) |
 | `memory_gc_tool` | Purge terminal-state memories past retention (dry-run default) |
+| `memory_verify_tool` | Record that a memory was verified (sets verified_at/commit, confidence 1.0) |
+| `memory_revalidate_tool` | Void verifications whose evidence changed |
 | `register_file_read_tool` | Store facts learned from reading a file (auto-hashes) |
 | `register_file_write_tool` | Register file changes with reason (auto-hashes) |
 | `*_create` (14) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
-## CLI commands (15)
+## CLI commands (17)
 
 | Command | Description |
 |---------|-------------|
@@ -256,6 +258,8 @@ totem import backup.json
 | `totem export` | Export memories as JSON |
 | `totem import <FILE>` | Import memories from JSON |
 | `totem gc` | Purge terminal-state memories past retention (`--apply`) |
+| `totem verify <ID>` | Record that a memory was verified |
+| `totem revalidate` | Void verifications whose evidence changed (`--apply`) |
 | `totem context` | Assemble scored context |
 
 ## Context assembly
@@ -304,8 +308,19 @@ totem auto-detects your project root via `git rev-parse --show-toplevel`. Overri
 `asserted_by` records **who asserted a claim** (user, test, source, git, doc,
 runtime, agent); it is not a verification signal. Each provenance sets a default
 confidence: test `0.95`, user/source/git/doc `0.9`, runtime `0.7`, agent `0.6`
-(hypotheses cap at `0.4`). Nothing reaches `1.0` by provenance alone; pass an
-explicit `confidence` for that. A user-asserted claim is trusted, not proven.
+(hypotheses cap at `0.4`). Nothing reaches `1.0` by provenance alone. A
+user-asserted claim is trusted, not proven.
+
+Verification is separate and explicit. `memory_verify` (`totem verify <ID>`)
+records that a claim was checked: it sets `verified_at` and `verified_commit`
+(HEAD by default), raises confidence to `1.0`, and writes a history event; an
+optional `verified_by` relation links the verification artifact. A verification
+holds only while its **evidence still matches** (truth maintenance: evidence is
+the premise, the verification the derived belief). When evidence changes, the
+verification is retracted and confidence drops back to its provenance default;
+`memory_get` does this on read, and `memory_revalidate` (`totem revalidate`)
+scans for it. The enforcement hook clears its `verify:<file>` gate only when a
+fresh verification record exists.
 
 ## Deployment boundary
 
