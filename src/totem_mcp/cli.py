@@ -9,6 +9,8 @@ import click
 from .context import engineering_context
 from .db import db_connection
 from .tools import (
+    memory_audit,
+    memory_check_record,
     memory_create,
     memory_delete,
     memory_export,
@@ -171,6 +173,7 @@ def delete(ctx: click.Context, item_id: str, reason: str) -> None:
 @click.option("--commit", default=None, help="Git commit verified at (default HEAD)")
 @click.option("--confidence", default=1.0, type=float, help="Confidence to set (default 1.0)")
 @click.option("--verified-by", "verified_by", default=None, help="Memory ID holding the verification artifact")
+@click.option("--check-id", "check_id", default=None, help="Recorded check ID justifying the verification")
 @click.pass_context
 def verify(
     ctx: click.Context,
@@ -179,16 +182,122 @@ def verify(
     commit: str | None,
     confidence: float,
     verified_by: str | None,
+    check_id: str | None,
 ) -> None:
     """Record that a memory was verified."""
     with db_connection(project=ctx.obj.get("project")) as conn:
         result = memory_verify(
             conn, item_id, method=method, commit=commit,
-            confidence=confidence, verified_by_id=verified_by,
+            confidence=confidence, verified_by_id=verified_by, check_id=check_id,
         )
         if result is None:
             raise click.ClickException(f"Item {item_id} not found")
         click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("check")
+@click.argument("item_id")
+@click.option("--name", required=True, help="Short check name")
+@click.option("--command", default=None, help="Command that was run")
+@click.option("--cwd", default=None, help="Working directory of the run")
+@click.option("--exit-code", default=0, type=int, help="Observed exit code (default 0)")
+@click.option("--output", default=None, help="Captured output (hashed, not stored)")
+@click.pass_context
+def check_cmd(
+    ctx: click.Context,
+    item_id: str,
+    name: str,
+    command: str | None,
+    cwd: str | None,
+    exit_code: int,
+    output: str | None,
+) -> None:
+    """Record an observed check for a memory item."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_check_record(
+            conn, item_id, name, command=command, cwd=cwd,
+            exit_code=exit_code, output=output,
+        )
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("audit")
+@click.pass_context
+def audit(ctx: click.Context) -> None:
+    """Verify the memory history hash chain."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_audit(conn)
+        click.echo(json.dumps(result, indent=2))
+        if not result["ok"]:
+            raise click.exceptions.Exit(1)
+
+
+@cli.command("eval")
+@click.option("--cases", "cases_file", default=None, type=click.Path(exists=True), help="Golden case JSON")
+@click.option("--out", default=None, help="Write the report to this path")
+@click.option("--baseline", default=None, type=click.Path(exists=True), help="Prior report to gate against")
+@click.option("--k", default=10, type=int)
+@click.option("--tolerance", default=0.02, type=float)
+@click.option("--p95", "p95_ms", default=2000.0, type=float)
+@click.pass_context
+def eval_cmd(
+    ctx: click.Context,
+    cases_file: str | None,
+    out: str | None,
+    baseline: str | None,
+    k: int,
+    tolerance: float,
+    p95_ms: float,
+) -> None:
+    """Evaluate context ranking (recall@k / MRR) and optionally gate a change."""
+    from pathlib import Path
+
+    from .context import engineering_context
+    from .db import get_all_items
+    from .eval_bench import auto_cases, evaluate, gate, load_cases
+
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        cases = load_cases(cases_file) if cases_file else auto_cases(get_all_items(conn))
+        report = evaluate(
+            cases,
+            lambda case: engineering_context(
+                conn, tags=case.tags, task=case.task or None,
+                paths=case.paths or None,
+            ),
+            k=k,
+        )
+        if baseline:
+            report["gate"] = gate(
+                json.loads(Path(baseline).read_text()), report, tolerance, p95_ms
+            )
+        text = json.dumps(report, indent=2)
+        if out:
+            Path(out).write_text(text)
+            click.echo(f"Wrote {out}")
+        else:
+            click.echo(text)
+        if report.get("gate") and not report["gate"]["ok"]:
+            raise click.exceptions.Exit(1)
+
+
+@cli.group("models")
+def models_group() -> None:
+    """Learned/advisory model maintenance."""
+
+
+@models_group.command("validate")
+@click.option("--min-test", default=20, type=int)
+@click.option("--tolerance", default=0.1, type=float)
+@click.pass_context
+def models_validate(ctx: click.Context, min_test: int, tolerance: float) -> None:
+    """Gate the calibrated trust head on held-out history."""
+    from .calibration import validate_and_promote
+
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            validate_and_promote(conn, min_test=min_test, tolerance=tolerance),
+            indent=2,
+        ))
 
 
 @cli.command()

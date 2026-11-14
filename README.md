@@ -64,6 +64,11 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 - **Agent enforcement** blocks reads/grep/bash when memory exists, forces search-first workflow
 - **Commit gates** block all tools until agent registers file reads and writes
 - **History audit** on every create, update, and delete
+- **Tamper-evident history**: hash-chained events plus item state digests (`totem audit`)
+- **Evidence-derived verification**: `memory_verify` consumes a recorded check, not a claim
+- **Calibrated trust**: dependency-free Platt + split-conformal trust sets, advisory until validated
+- **Hybrid ranking**: FTS + deterministic dense encoder with reciprocal-rank fusion and MMR
+- **Bounded MCP tools**: output caps, rate limits, deadlines, and a tool-manifest digest
 
 ## How it works
 

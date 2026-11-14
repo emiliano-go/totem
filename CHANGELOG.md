@@ -1,6 +1,57 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-14)
+
+Evidence and trust release: tamper-evident history, observed checks,
+path-contained evidence, a hardened MCP surface, and advisory ranking and
+calibration models.
+
+### Evidence discipline (schema v10)
+
+- **Hash-chained history.** `memory_history` rows now carry `prev_hash`, `hash`,
+  and a `state_hash` snapshot of the item. `memory_audit_tool` / `totem audit`
+  recompute the chain and report the first bad row; the CLI exits non-zero on
+  mismatch. Rewriting history, deleting a row, or a direct `UPDATE
+  memory_items` that never wrote history is now detectable.
+- **Evidence-derived verification.** New `memory_check_record` /
+  `memory_check_record_tool` / `totem check` records an observed check
+  (`command`, `cwd`, `exit_code`, output hash, evidence hash, commit, run time).
+  `memory_verify(check_id=...)` requires the check to exist, belong to the item,
+  have exited 0, and match the item's current evidence digest. Verifications
+  without a check are recorded as `verificationMode="assertion"` and surfaced
+  with a warning; check-backed ones are `"check"`.
+- **Path containment.** Evidence paths are anchored to the project root with
+  `realpath` + `commonpath` (new `paths.py`). Absolute paths outside the root,
+  `..` traversal, and symlink escapes are rejected at registration and at
+  staleness reads. `Evidence.path` also rejects `..`.
+- **Write-gate change capture.** `register_file_write` records the
+  git-observed `actualChangedFiles` plus a bounded content `diffDigest`, so a
+  claimed write that changed nothing is visible in metadata.
+
+### MCP hardening
+
+- Every registered tool is wrapped with bounded output (`truncated` + `bytes`
+  envelope), per-tool token-bucket rate limiting, argument size caps, a
+  wall-clock deadline, and fail-soft JSON errors.
+- `totem_manifest_tool` returns a stable SHA-256 of the tool surface.
+
+### Advisory models
+
+- `calibration.py`: dependency-free Platt scaling and split-conformal
+  prediction over claim features; small samples report `mode="shared"` instead
+  of implying a guarantee. `rule_trust` is the deterministic baseline;
+  `totem models validate` promotes a calibrated head only on a temporal
+  held-out slice with a better Brier score and coverage inside tolerance.
+- `ranking.py`: deterministic signed-hash TF-IDF encoder, reciprocal-rank
+  fusion, MMR diversification, and a trainable linear reranker.
+  `engineering_context` fuses lexical FTS with the dense leg and reports
+  `trustScores`, `closestId`, and `calibration`.
+- `eval_bench.py` / `totem eval`: recall@k, MRR, p95 latency, and a promotion
+  gate (no recall/MRR regression beyond tolerance, latency within budget).
+- Single schema constant: `models.SCHEMA_VERSION` is imported by `db` (was 8
+  vs 9).
+
+## 0.7.0 (2026-10-16)
 
 ### Verification
 

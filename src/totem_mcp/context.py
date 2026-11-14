@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 
 import turso
 
+from .calibration import load_calibrator, rule_trust
 from .db import (
     get_item,
     get_open_conflicts,
@@ -15,9 +17,12 @@ from .db import (
     list_items,
     connect,
     get_user_db_path,
+    search_fts,
 )
 from .hashing import check_staleness, verification_fresh
+from .paths import project_root
 from .models import Conflict, MemoryStatus, MemoryType, scope_kind
+from .ranking import DenseEncoder, experience_nearest, mmr, rrf_fuse
 from pathlib import Path
 
 # Statuses to skip in context output
@@ -30,6 +35,17 @@ _SKIP_STATUSES = {
 
 # Types that get 1.25x score multiplier (spec §11)
 _BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGUITY}
+
+
+def _semantic_enabled() -> bool:
+    return os.environ.get("TOTEM_SEMANTIC", "1").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _item_text(item) -> str:
+    parts = [item.title, item.statement, item.details or "", " ".join(item.tags)]
+    return "\n".join(part for part in parts if part)
 
 
 def _scope_value(scope: str | None) -> str:
@@ -79,6 +95,8 @@ def _score_item(
     tags: list[str],
     task_words: set[str] | None = None,
     paths: list[str] | None = None,
+    semantic_score: float = 0.0,
+    trust: float | None = None,
 ) -> float:
     """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.25*importance
     + 0.15*confidence + 0.10*recency. Invariants/constraints/ambiguities: 1.25x.
@@ -109,6 +127,12 @@ def _score_item(
         score *= 1.10
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
+    if semantic_score:
+        score *= 1.0 + 0.25 * max(0.0, min(1.0, semantic_score))
+    if trust is not None:
+        # Calibrated/rule trust shifts ranking without overriding the hard
+        # critical-type boost.
+        score *= 0.80 + 0.40 * max(0.0, min(1.0, trust))
     return score
 
 
@@ -287,6 +311,48 @@ def engineering_context(
                 all_items.append(item)
                 known.add(item.id)
 
+    # Retrieval rank ensemble: lexical FTS (when the query has terms) fused by
+    # reciprocal rank with the dependency-free dense encoder. This is the
+    # default semantic candidate source; pass ``semantic_candidates`` to
+    # override it (e.g. with an external embedding backend).
+    query = (current_task or task or " ".join(tags) or "").strip()
+    semantic_scores: dict[str, float] = {}
+    closest_id: str | None = None
+    if _semantic_enabled() and query and all_items:
+        texts = [_item_text(item) for item in all_items]
+        encoder = DenseEncoder().fit(texts + [query])
+        ranked = encoder.rank(query, texts)
+        # Diversify the dense leg so RRF does not get five near-duplicate
+        # memories from one file. The deterministic score still owns the final
+        # ordering, so MMR can never override a scope/type precedence boost.
+        order = mmr(
+            encoder.encode(query), encoder.vectors(texts),
+            [index for index, _ in ranked], k=len(ranked), lam=0.7,
+        )
+        dense_ids = [all_items[index].id for index in order]
+        lexical_ids: list[str] = []
+        try:
+            known = {item.id for item in all_items}
+            lexical_ids = [
+                item.id for item in search_fts(
+                    conn, query, include_stale=True, limit=100
+                ) if item.id in known
+            ]
+        except Exception:
+            lexical_ids = []
+        semantic_scores = rrf_fuse([lexical_ids, dense_ids])
+        # N=1 prior-experience recall: the single most similar memory, which
+        # is the task analogue of SWE-Exp retrieval.
+        closest_id = experience_nearest(
+            query, texts, [item.id for item in all_items]
+        )
+
+    trust_calibrator = load_calibrator(conn)
+    root = project_root(conn)
+    trust_scores = {
+        item.id: rule_trust(item, root=root) for item in all_items
+    }
+
     scored = []
     stale_items: list = []
     for item in all_items:
@@ -303,7 +369,11 @@ def engineering_context(
             stale_items.append(item)
             if not include_stale:
                 continue
-        score = _score_item(item, tags, task_words, paths)
+        score = _score_item(
+            item, tags, task_words, paths,
+            semantic_score=semantic_scores.get(item.id, 0.0),
+            trust=trust_scores.get(item.id),
+        )
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -343,6 +413,7 @@ def engineering_context(
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
                 symbol_hash=ev.symbol_hash,
+                root=project_root(conn),
             ):
                 seen_warnings.add(key)
                 stale_warnings.append(
@@ -540,7 +611,7 @@ def engineering_context(
             reasons.append("path")
         if item_id in relation_hop_ids:
             reasons.append("relation-hop")
-        if item_id in semantic_ids:
+        if item_id in semantic_ids or semantic_scores.get(item_id, 0.0) > 0:
             reasons.append("semantic")
         if item and tag_set and (set(item.tags) & tag_set):
             reasons.append("tag")
@@ -548,8 +619,14 @@ def engineering_context(
             reasons.append("task-scope")
         if item and item.type in _BOOSTED_TYPES:
             reasons.append("critical")
+        if trust_scores.get(item_id, 1.0) < 0.5:
+            reasons.append("low-trust")
         why[item_id] = reasons
 
+    selected_trust = {
+        item_id: round(trust_scores.get(item_id, 0.0), 4)
+        for item_id in selected_ids
+    }
     return {
         "context": context,
         "selectedIds": selected_ids,
@@ -562,4 +639,10 @@ def engineering_context(
         "estimatedTokens": token_count,
         "omitted": omitted,
         "why": why,
+        "trustScores": selected_trust,
+        "closestId": closest_id,
+        "semanticEnabled": _semantic_enabled(),
+        "calibration": (
+            "temporal-split" if trust_calibrator is not None else "rule"
+        ),
     }

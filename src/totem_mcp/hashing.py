@@ -7,6 +7,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from .paths import EvidencePathError, contained_path
+
 # A definition line in the languages totem tends to see. Language-light on purpose.
 _SYMBOL_DEF_RE = re.compile(
     r"^\s*(?:async\s+)?(?:def|class|function|func|fn|sub|method)\b"
@@ -125,6 +127,7 @@ def check_staleness(
     symbol: str | None = None,
     blob_hash: str | None = None,
     symbol_hash: str | None = None,
+    root: str | Path | None = None,
 ) -> bool:
     """Return True if evidence is stale.
 
@@ -134,6 +137,11 @@ def check_staleness(
     the old presence-only behaviour. Then whole-file blob equality, then the
     line-range hash.
     """
+    try:
+        path = contained_path(path, root)
+    except EvidencePathError:
+        # An evidence path that escapes the project cannot be trusted as fresh.
+        return True
     text = read_file_text(path)
     if text is None:
         return True
@@ -152,7 +160,7 @@ def check_staleness(
     return hash_content(content) != stored_hash
 
 
-def verification_fresh(item) -> bool:
+def verification_fresh(item, root: str | Path | None = None) -> bool:
     """True only while a verification's justification still holds.
 
     Truth-maintenance idea: evidence is the premise, the verification the
@@ -170,6 +178,7 @@ def verification_fresh(item) -> bool:
             symbol=ev.symbol,
             blob_hash=ev.blob_hash,
             symbol_hash=ev.symbol_hash,
+            root=root,
         ):
             return False
     return True

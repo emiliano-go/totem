@@ -8,9 +8,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-SCHEMA_VERSION = 8
+# Single source of truth for the on-disk schema. ``db`` imports this constant;
+# keeping a second copy here silently diverged (8 vs 9) and made every model
+# instance claim a schema it was not stored under.
+SCHEMA_VERSION = 10
 
 # Hard resource limits: an agent must not be able to persist an unbounded blob.
 LIMITS = {
@@ -131,6 +134,17 @@ class Evidence(BaseModel):
     blob_hash: str | None = Field(default=None, alias="blobHash")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("path")
+    @classmethod
+    def _reject_traversal(cls, value: str) -> str:
+        if not value or "\0" in value:
+            msg = "evidence path must be a non-empty string without NUL bytes"
+            raise ValueError(msg)
+        if ".." in value.replace("\\", "/").split("/"):
+            msg = "evidence path may not contain '..'"
+            raise ValueError(msg)
+        return value
 
 
 # Bug state machine: open → confirmed → fixed → verified

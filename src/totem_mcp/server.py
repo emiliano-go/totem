@@ -7,11 +7,16 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .calibration import validate_and_promote
 from .context import engineering_context
 from .db import db_connection
-from .db import list_task_items, list_command_items
+from .db import get_all_items, list_task_items, list_command_items
 from .errors import error_response, not_found
+from .eval_bench import auto_cases, evaluate, gate, load_cases
+from .hardening import harden_registry, tool_manifest
 from .tools import (
+    memory_audit,
+    memory_check_record,
     memory_create,
     memory_history,
     memory_relate,
@@ -287,6 +292,7 @@ def memory_verify_tool(
     commit: str | None = None,
     confidence: float = 1.0,
     verified_by_id: str | None = None,
+    check_id: str | None = None,
     project: str | None = None,
     actor: str | None = None,
     session: str | None = None,
@@ -295,7 +301,9 @@ def memory_verify_tool(
 ) -> str:
     """Record that a memory was verified: sets verified_at and verified_commit.
 
-    Verification, not provenance, is what earns confidence 1.0.
+    Verification, not provenance, is what earns confidence 1.0. Pass
+    ``check_id`` from ``memory_check_record_tool`` for evidence-derived
+    verification; without it the verification is recorded as an assertion.
 
     Args:
         id: The memory item ID to mark verified
@@ -303,18 +311,136 @@ def memory_verify_tool(
         commit: Git commit verified at (defaults to HEAD)
         confidence: Confidence to set (default 1.0)
         verified_by_id: Optional memory ID holding the verification artifact
+        check_id: Recorded check ID that justifies the verification
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
         try:
             result = memory_verify(
                 conn, id, method=method, commit=commit, confidence=confidence,
-                verified_by_id=verified_by_id, actor=actor, session=session,
+                verified_by_id=verified_by_id, check_id=check_id,
+                actor=actor, session=session,
                 request_id=request_id, operation_id=operation_id,
             )
             if result is None:
                 return not_found(f"Item {id} not found")
             return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_check_record_tool(
+    id: str,
+    name: str,
+    command: str | None = None,
+    cwd: str | None = None,
+    exit_code: int = 0,
+    output: str | None = None,
+    output_hash: str | None = None,
+    evidence_hash: str | None = None,
+    commit: str | None = None,
+    ran_at: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Record an observed check (command, exit code, output hash) for a memory.
+
+    Args:
+        id: The memory item the check supports
+        name: Short check name, e.g. "pytest tests/test_auth.py"
+        command: The command that was run
+        cwd: Working directory the command ran in
+        exit_code: Observed exit code (0 is a pass)
+        output: Optional captured output (hashed, not stored verbatim)
+        output_hash: Pre-computed SHA256 of the output
+        evidence_hash: Evidence digest the check ran against (defaults to now)
+        commit: Git commit the check ran at (defaults to HEAD)
+        ran_at: ISO timestamp of the run
+        project: Optional project root path. Auto-detected from git root if omitted.
+    """
+    with db_connection(project=project) as conn:
+        try:
+            result = memory_check_record(
+                conn, id, name, command=command, cwd=cwd, exit_code=exit_code,
+                output=output, output_hash=output_hash,
+                evidence_hash=evidence_hash, commit=commit, ran_at=ran_at,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_audit_tool(project: str | None = None) -> str:
+    """Verify the history hash chain and each item's recorded state digest."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_audit(conn), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def totem_manifest_tool() -> str:
+    """Return the stable digest of the registered tool surface."""
+    return json.dumps(tool_manifest(mcp._tool_manager._tools), indent=2)
+
+
+@mcp.tool()
+def totem_eval_tool(
+    cases_file: str | None = None,
+    k: int = 10,
+    baseline_file: str | None = None,
+    tolerance: float = 0.02,
+    p95_ms: float = 2000.0,
+    project: str | None = None,
+) -> str:
+    """Evaluate context ranking on a golden case file (or an auto smoke set).
+
+    Args:
+        cases_file: JSON file of cases; omitted means derive cases from memories
+        k: Cutoff for recall@k
+        baseline_file: Optional prior report to gate against
+        tolerance: Allowed recall/MRR regression
+        p95_ms: Latency budget for the gate
+        project: Optional project root path
+    """
+    with db_connection(project=project) as conn:
+        try:
+            cases = (
+                load_cases(cases_file) if cases_file
+                else auto_cases(get_all_items(conn))
+            )
+            report = evaluate(
+                cases,
+                lambda case: engineering_context(
+                    conn, tags=case.tags, task=case.task or None,
+                    paths=case.paths or None,
+                ),
+                k=k,
+            )
+            if baseline_file:
+                import json as _json
+                baseline = _json.loads(open(baseline_file, encoding="utf-8").read())
+                report["gate"] = gate(baseline, report, tolerance, p95_ms)
+            return json.dumps(report, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def totem_validate_models_tool(
+    min_test: int = 20,
+    tolerance: float = 0.1,
+    project: str | None = None,
+) -> str:
+    """Gate the calibrated trust head on a temporal held-out slice."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                validate_and_promote(conn, min_test=min_test, tolerance=tolerance),
+                indent=2,
+            )
         except Exception as e:
             return error_response(e)
 
@@ -951,6 +1077,7 @@ def implementation_create(title: str, statement: str, tags: list[str],
 
 
 def main() -> None:
+    harden_registry(mcp._tool_manager._tools)
     mcp.run()
 
 

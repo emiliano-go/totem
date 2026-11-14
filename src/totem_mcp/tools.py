@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from .db import (
     get_all_conflicts,
     insert_relation,
     get_all_items,
+    get_check,
     get_item,
     get_head_commit,
     get_overlapping_items,
@@ -34,13 +37,16 @@ from .db import (
     insert_conflict,
     insert_history,
     insert_item,
+    record_check,
     list_items,
     resolve_conflict as db_resolve_conflict,
     search_fts,
     soft_delete,
     update_item_row,
+    verify_history,
 )
 from .hashing import check_staleness, hash_content, hash_symbol, verification_fresh
+from .paths import EvidencePathError, contained_path, project_root
 from .models import (
     LIMITS,
     SCOPE_KINDS,
@@ -72,6 +78,54 @@ def _guess_symbol(lines: list[str], start_line: int) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def _content_digest(root: Path, files: list[str], per_file: int = 2_000_000) -> str:
+    """Digest the observed bytes of changed files, bounded per file."""
+    digest = hashlib.sha256()
+    for rel in files[:200]:
+        digest.update(rel.encode("utf-8", "replace"))
+        digest.update(b"\0")
+        try:
+            with open(root / rel, "rb") as handle:
+                digest.update(handle.read(per_file))
+        except OSError:
+            digest.update(b"<missing>")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _git_change_snapshot(root: Path | None) -> dict:
+    """Files git observes as changed, plus a bounded content digest.
+
+    The commit gate otherwise trusts the agent's declaration. This records what
+    actually moved, so a claimed write that changed nothing (or changed other
+    files) is visible in history.
+    """
+    if root is None:
+        return {}
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "-z"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    files: list[str] = []
+    for entry in result.stdout.split("\0"):
+        if not entry or len(entry) < 4:
+            continue
+        name = entry[3:]
+        if " -> " in name:
+            name = name.split(" -> ", 1)[1]
+        files.append(name)
+    files = sorted(set(files))
+    return {
+        "actualChangedFiles": files,
+        "diffDigest": _content_digest(root, files),
+    }
 
 
 def _normalize_tags(tags: list[str]) -> list[str]:
@@ -288,6 +342,7 @@ def memory_get(
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
                 symbol_hash=ev.symbol_hash,
+                root=project_root(conn),
             ):
                 stale_evidence.append(ev)
                 warnings.append(
@@ -462,6 +517,7 @@ def memory_verify(
     commit: str | None = None,
     confidence: float = 1.0,
     verified_by_id: str | None = None,
+    check_id: str | None = None,
     actor: str | None = None,
     session: str | None = None,
     request_id: str | None = None,
@@ -469,10 +525,15 @@ def memory_verify(
 ) -> dict | None:
     """Record that a memory was checked: sets verified_at and verified_commit.
 
-    Verification, not provenance, is what earns top trust, so confidence is
-    raised to ``confidence`` (default 1.0). ``commit`` defaults to HEAD. An
-    optional ``verified_by_id`` links the verification artifact (a test result,
-    log, etc.) via a ``verified_by`` relation. Returns None if not found.
+    Evidence-derived verification is the strong path: pass ``check_id`` from
+    :func:`memory_check_record` and the check must exist, belong to this item,
+    have exited 0, and match the item's current evidence digest. Recording an
+    assertion without a check still works for compatibility, but is marked
+    ``verificationMode="assertion"`` so the context compiler and calibration
+    model can weight it below an observed check.
+
+    ``commit`` defaults to HEAD. An optional ``verified_by_id`` links the
+    verification artifact via a ``verified_by`` relation.
     """
     item = get_item(conn, id)
     if item is None:
@@ -480,14 +541,49 @@ def memory_verify(
     if confidence is not None and not (0 <= confidence <= 1):
         raise ValueError("confidence must be in [0, 1]")
 
+    warnings: list[str] = []
+    mode = "assertion"
+    check = None
+    if check_id:
+        check = get_check(conn, check_id)
+        if check is None:
+            raise ValueError(f"check not found: {check_id}")
+        if check["itemId"] != id:
+            raise ValueError(f"check {check_id} does not belong to {id}")
+        if int(check["exitCode"]) != 0:
+            raise ValueError(
+                f"check {check_id} did not pass (exit {check['exitCode']})"
+            )
+        current = _evidence_digest(item)
+        if check.get("evidenceHash") and check["evidenceHash"] != current:
+            raise ValueError(
+                "check was recorded against different evidence; re-run it"
+            )
+        mode = "check"
+    else:
+        warnings.append(
+            "assertion-only verification: record an observed check with "
+            "memory_check_record and pass check_id for evidence-derived trust"
+        )
+
     commit = commit or get_head_commit()
     now = _now()
-    fields = {"verified_at": now, "verified_commit": commit, "updated_at": now}
+    meta = dict(item.metadata or {})
+    meta["verificationMode"] = mode
+    if check_id:
+        meta["lastCheckId"] = check_id
+    fields = {
+        "verified_at": now,
+        "verified_commit": commit,
+        "updated_at": now,
+        "metadata": json.dumps(meta),
+    }
     if confidence is not None:
         fields["confidence"] = confidence
     update_item_row(conn, id, fields)
     insert_history(
-        conn, id, "verified", field="verificationMethod", new_value=method,
+        conn, id, "verified", field="verificationMethod",
+        new_value=(f"check:{check_id}" if check_id else method),
         reason="memory_verify", source="memory_verify", actor=actor,
         session=session, request_id=request_id, commit=commit,
     )
@@ -496,7 +592,79 @@ def memory_verify(
             raise ValueError(f"verified_by_id not found: {verified_by_id}")
         insert_relation(conn, id, verified_by_id, "verified_by")
     updated = get_item(conn, id)
-    return updated.model_dump(by_alias=True) if updated else None
+    if updated is None:
+        return None
+    result = updated.model_dump(by_alias=True)
+    result["verificationMode"] = mode
+    if check is not None:
+        result["check"] = check
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+def _evidence_digest(item: MemoryItem) -> str:
+    payload = [e.model_dump(by_alias=True) for e in item.evidence]
+    return hash_content(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+@atomic
+@idempotent
+def memory_check_record(
+    conn: turso.Connection,
+    id: str,
+    name: str,
+    command: str | None = None,
+    cwd: str | None = None,
+    exit_code: int = 0,
+    output: str | None = None,
+    output_hash: str | None = None,
+    evidence_hash: str | None = None,
+    commit: str | None = None,
+    ran_at: str | None = None,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict:
+    """Record one observed check result against a memory item.
+
+    The check is the evidence a later ``memory_verify(check_id=...)`` consumes.
+    ``exit_code`` and the hashes are recorded as given: this layer never invents
+    a verdict, it makes one attributable.
+    """
+    item = get_item(conn, id)
+    if item is None:
+        raise ValueError(f"item not found: {id}")
+    if not name:
+        raise ValueError("check name is required")
+    if output and not output_hash:
+        output_hash = hash_content(output[-20_000:])
+    if evidence_hash is None:
+        evidence_hash = _evidence_digest(item)
+    record = record_check(
+        conn,
+        item_id=id,
+        name=name,
+        command=command,
+        cwd=cwd,
+        exit_code=exit_code,
+        output_hash=output_hash,
+        evidence_hash=evidence_hash,
+        commit=commit or get_head_commit(),
+        ran_at=ran_at,
+    )
+    insert_history(
+        conn, id, "checked", field="name", new_value=name,
+        reason=f"exit {exit_code}", source="memory_check_record", actor=actor,
+        session=session, request_id=request_id, commit=commit,
+    )
+    return record
+
+
+def memory_audit(conn: turso.Connection) -> dict:
+    """Verify the history hash chain and each item's recorded state digest."""
+    return verify_history(conn)
 
 
 @atomic
@@ -518,7 +686,7 @@ def memory_revalidate(
     voided: list[str] = []
     for (item_id,) in rows:
         item = get_item(conn, item_id)
-        if item is None or verification_fresh(item):
+        if item is None or verification_fresh(item, root=project_root(conn)):
             continue
         voided.append(item_id)
         if not dry_run:
@@ -894,6 +1062,7 @@ def memory_search(
                 symbol=ev.symbol,
                 blob_hash=ev.blob_hash,
                 symbol_hash=ev.symbol_hash,
+                root=project_root(conn),
             ):
                 warnings.append(f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}")
         d = item.model_dump(by_alias=True)
@@ -932,7 +1101,10 @@ def register_file_read(
     memories; the same fact updates in place. Evidence stores a whole-file blob
     hash plus an optional symbol so moved code is not reported stale.
     """
-    file_path = Path(path)
+    try:
+        file_path = contained_path(path, project_root(conn))
+    except EvidencePathError as e:
+        return {"error": str(e)}
     if not file_path.is_file():
         return {"error": f"File not found: {path}"}
 
@@ -1095,7 +1267,10 @@ def register_file_write(
     symbol: str | None = None,
 ) -> dict:
     """Register a file write/modification. Updates existing memory for same path, or creates new."""
-    file_path = Path(path)
+    try:
+        file_path = contained_path(path, project_root(conn))
+    except EvidencePathError as e:
+        return {"error": str(e)}
     if not file_path.is_file():
         return {"error": f"File not found: {path}"}
 
@@ -1115,6 +1290,7 @@ def register_file_write(
     content_hash = hash_content(range_content)
     blob_hash = hash_content(content)
     symbol_hash = hash_symbol(file_path, symbol, text=content) if symbol else None
+    change_snapshot = _git_change_snapshot(project_root(conn))
 
     # Locate the existing implementation memory via the locator index (no scan).
     existing_id = find_locator_item_by_path(conn, path)
@@ -1160,6 +1336,7 @@ def register_file_write(
         meta["reason"] = reason
         meta["contentHash"] = content_hash
         meta["blobHash"] = blob_hash
+        meta.update(change_snapshot)
         if symbol:
             meta["symbol"] = symbol
         if symbol_hash:
@@ -1177,6 +1354,7 @@ def register_file_write(
             "action": "updated",
             "statement": statement,
             "reason": reason,
+            **change_snapshot,
             "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash, "symbolHash": symbol_hash},
         }
     else:
@@ -1195,6 +1373,7 @@ def register_file_write(
                 "changeType": "write",
                 "reason": reason,
                 "contentHash": content_hash,
+                **change_snapshot,
                 **({"startLine": actual_start} if start_line is not None else {}),
                 **({"endLine": actual_end} if end_line is not None else {}),
                 **({"symbolHash": symbol_hash} if symbol_hash else {}),
@@ -1225,5 +1404,6 @@ def register_file_write(
             "action": "created",
             "statement": statement,
             "reason": reason,
+            **change_snapshot,
             "evidence": {"path": path, "startLine": actual_start, "endLine": actual_end, "contentHash": content_hash, "symbolHash": symbol_hash},
         }

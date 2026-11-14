@@ -7,6 +7,7 @@ tenancy or authorization). Do not share one user DB across OS users.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -23,9 +24,14 @@ try:
 except ImportError:  # non-POSIX: multiprocess locking is best-effort
     fcntl = None
 
-from .models import Conflict, Evidence, MemoryItem, MemoryStatus, MemoryType
-
-SCHEMA_VERSION = 9
+from .models import (
+    SCHEMA_VERSION,
+    Conflict,
+    Evidence,
+    MemoryItem,
+    MemoryStatus,
+    MemoryType,
+)
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -141,8 +147,28 @@ CREATE TABLE IF NOT EXISTS memory_history (
     source TEXT,
     commit_sha TEXT,
     request_id TEXT,
-    timestamp TEXT NOT NULL
+    timestamp TEXT NOT NULL,
+    prev_hash TEXT,
+    hash TEXT,
+    state_hash TEXT
 );
+"""
+
+CREATE_CHECKS = """
+CREATE TABLE IF NOT EXISTS memory_checks (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    command TEXT,
+    cwd TEXT,
+    exit_code INTEGER NOT NULL,
+    output_hash TEXT,
+    evidence_hash TEXT,
+    commit_sha TEXT,
+    ran_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_checks_item ON memory_checks (item_id);
 """
 
 
@@ -332,6 +358,7 @@ def _init_db_once(conn: turso.Connection) -> None:
     conn.executescript(CREATE_FTS)
     conn.executescript(CREATE_CONFLICTS)
     conn.executescript(CREATE_HISTORY)
+    conn.executescript(CREATE_CHECKS)
     conn.executescript(CREATE_RELATIONS)
     conn.executescript(CREATE_RELATIONS_INDEXES)
     conn.executescript(CREATE_LOCATORS)
@@ -581,6 +608,75 @@ def _migrate_indexes(conn: turso.Connection) -> None:
     )
 
 
+_HISTORY_FIELDS = (
+    "item_id", "event", "field", "old_value", "new_value", "reason", "actor",
+    "session", "source", "commit_sha", "request_id", "timestamp", "state_hash",
+)
+
+
+def _canonical(obj) -> str:
+    """Stable JSON used by every hash in this module."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _item_digest(conn: turso.Connection, item_id: str) -> str:
+    """Digest of an item's stored row, or "" when it does not exist.
+
+    Recorded on each history row so a direct ``UPDATE memory_items`` that never
+    wrote history is detectable after the fact.
+    """
+    try:
+        row = conn.execute(
+            f"SELECT {ITEM_COLS} FROM memory_items WHERE id = ?", (item_id,)
+        ).fetchone()
+    except Exception:
+        return ""
+    if row is None:
+        return ""
+    payload = {name: row[i] for i, name in enumerate(COLUMNS)}
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def _history_digest(entry: dict, prev_hash: str) -> str:
+    payload = {**entry, "prev_hash": prev_hash}
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def _migrate_checks_and_chain(conn: turso.Connection) -> None:
+    """v10: evidence checks, plus a hash chain over memory_history."""
+    _add_columns(
+        conn,
+        "memory_history",
+        [
+            ("prev_hash", "prev_hash TEXT"),
+            ("hash", "hash TEXT"),
+            ("state_hash", "state_hash TEXT"),
+        ],
+    )
+    conn.executescript(CREATE_CHECKS)
+    # Backfill the chain over existing rows, in insertion order. Legacy rows
+    # have no recorded state digest, so state_hash stays NULL for them.
+    columns = (
+        "item_id, event, field, old_value, new_value, reason, actor, session, "
+        "source, commit_sha, request_id, timestamp, state_hash"
+    )
+    rows = conn.execute(
+        f"SELECT rowid, {columns}, hash FROM memory_history ORDER BY rowid"
+    ).fetchall()
+    prev = ""
+    for row in rows:
+        entry = {name: row[i + 1] for i, name in enumerate(_HISTORY_FIELDS)}
+        if row[-1]:
+            prev = row[-1]
+            continue
+        digest = _history_digest(entry, prev)
+        conn.execute(
+            "UPDATE memory_history SET prev_hash = ?, hash = ? WHERE rowid = ?",
+            (prev, digest, row[0]),
+        )
+        prev = digest
+
+
 MIGRATIONS = [
     (2, _migrate_conflicts),
     (3, _migrate_v3),
@@ -590,6 +686,7 @@ MIGRATIONS = [
     (7, _migrate_history_audit),
     (8, _migrate_operations),
     (9, _migrate_locators),
+    (10, _migrate_checks_and_chain),
 ]
 
 
@@ -635,6 +732,14 @@ def _verify_migration(conn: turso.Connection, target: int) -> None:
             if row and "UNIQUE" in (row[0] or "").upper()
             else {"memory_locators_path_subject"}
         )
+    elif target == 10:
+        missing = {"prev_hash", "hash", "state_hash"} - _columns(
+            conn, "memory_history"
+        )
+        if not _has_table(conn, "memory_checks"):
+            missing.add("memory_checks")
+        if not _has_index(conn, "memory_checks_item"):
+            missing.add("memory_checks_item")
     else:
         missing = set()
     if missing:
@@ -760,14 +865,42 @@ def insert_history(
     commit: str | None = None,
     request_id: str | None = None,
 ) -> None:
-    """Append an immutable history event for audit trail."""
+    """Append a hash-chained history event for the audit trail.
+
+    Each row hashes the previous row's digest, so deleting or rewriting a row
+    breaks every later link. ``state_hash`` snapshots the item row at event
+    time, which makes an out-of-band ``UPDATE memory_items`` detectable too.
+    """
     from datetime import datetime, timezone
 
+    timestamp = datetime.now(timezone.utc).isoformat()
+    state_hash = _item_digest(conn, item_id)
+    entry = {
+        "item_id": item_id,
+        "event": event,
+        "field": field,
+        "old_value": old_value,
+        "new_value": new_value,
+        "reason": reason,
+        "actor": actor,
+        "session": session,
+        "source": source,
+        "commit_sha": commit,
+        "request_id": request_id,
+        "timestamp": timestamp,
+        "state_hash": state_hash or None,
+    }
+    row = conn.execute(
+        "SELECT hash FROM memory_history ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    prev = (row[0] if row and row[0] else "") or ""
+    digest = _history_digest(entry, prev)
     conn.execute(
         """INSERT INTO memory_history
            (id, item_id, event, field, old_value, new_value, reason,
-            actor, session, source, commit_sha, request_id, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            actor, session, source, commit_sha, request_id, timestamp,
+            prev_hash, hash, state_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             str(uuid.uuid4()),
             item_id,
@@ -781,9 +914,148 @@ def insert_history(
             source,
             commit,
             request_id,
-            datetime.now(timezone.utc).isoformat(),
+            timestamp,
+            prev,
+            digest,
+            state_hash or None,
         ),
     )
+
+
+def verify_history(conn: turso.Connection) -> dict:
+    """Recompute the memory_history hash chain and check current item state.
+
+    Returns ``ok`` only when every link matches *and* the latest recorded
+    state digest for each item matches its stored row.
+    """
+    columns = (
+        "rowid, item_id, event, field, old_value, new_value, reason, actor, "
+        "session, source, commit_sha, request_id, timestamp, state_hash, "
+        "prev_hash, hash"
+    )
+    rows = conn.execute(
+        f"SELECT {columns} FROM memory_history ORDER BY rowid"
+    ).fetchall()
+    prev = ""
+    first_bad: int | None = None
+    for row in rows:
+        entry = {name: row[i + 1] for i, name in enumerate(_HISTORY_FIELDS)}
+        expected = _history_digest(entry, prev)
+        prev_hash = row[14] or ""
+        digest = row[15] or ""
+        if prev_hash != prev or digest != expected:
+            first_bad = row[0]
+            break
+        prev = expected
+
+    latest: dict[str, str] = {}
+    for row in rows:
+        state_hash = row[13]
+        if state_hash:
+            latest[row[1]] = state_hash
+    mismatches: list[str] = []
+    for item_id, state_hash in latest.items():
+        if _item_digest(conn, item_id) != state_hash:
+            mismatches.append(item_id)
+    ok = first_bad is None and not mismatches
+    reason = "chain intact" if ok else (
+        "hash chain mismatch" if first_bad is not None
+        else "item state does not match its last recorded digest"
+    )
+    return {
+        "ok": ok,
+        "rows": len(rows),
+        "first_bad_id": first_bad,
+        "state_mismatches": mismatches,
+        "reason": reason,
+    }
+
+
+def get_meta(conn: turso.Connection, key: str) -> str | None:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    except Exception:
+        return None
+    return row[0] if row else None
+
+
+def set_meta(conn: turso.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+    )
+
+
+def record_check(
+    conn: turso.Connection,
+    item_id: str,
+    name: str,
+    command: str | None,
+    cwd: str | None,
+    exit_code: int,
+    output_hash: str | None = None,
+    evidence_hash: str | None = None,
+    commit: str | None = None,
+    ran_at: str | None = None,
+) -> dict:
+    """Persist one observed check result for an item (never a model claim)."""
+    from datetime import datetime, timezone
+
+    check_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO memory_checks
+           (id, item_id, name, command, cwd, exit_code, output_hash,
+            evidence_hash, commit_sha, ran_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            check_id, item_id, name, command, cwd, int(exit_code), output_hash,
+            evidence_hash, commit, ran_at or now, now,
+        ),
+    )
+    return {
+        "id": check_id,
+        "itemId": item_id,
+        "name": name,
+        "command": command,
+        "cwd": cwd,
+        "exitCode": int(exit_code),
+        "outputHash": output_hash,
+        "evidenceHash": evidence_hash,
+        "commit": commit,
+        "ranAt": ran_at or now,
+    }
+
+
+def get_check(conn: turso.Connection, check_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT id, item_id, name, command, cwd, exit_code, output_hash, "
+        "evidence_hash, commit_sha, ran_at FROM memory_checks WHERE id = ?",
+        (check_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0], "itemId": row[1], "name": row[2], "command": row[3],
+        "cwd": row[4], "exitCode": row[5], "outputHash": row[6],
+        "evidenceHash": row[7], "commit": row[8], "ranAt": row[9],
+    }
+
+
+def list_checks(conn: turso.Connection, item_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, item_id, name, command, cwd, exit_code, output_hash, "
+        "evidence_hash, commit_sha, ran_at FROM memory_checks "
+        "WHERE item_id = ? ORDER BY ran_at",
+        (item_id,),
+    ).fetchall()
+    return [
+        {
+            "id": r[0], "itemId": r[1], "name": r[2], "command": r[3],
+            "cwd": r[4], "exitCode": r[5], "outputHash": r[6],
+            "evidenceHash": r[7], "commit": r[8], "ranAt": r[9],
+        }
+        for r in rows
+    ]
 
 
 def get_item(conn: turso.Connection, item_id: str) -> MemoryItem | None:
