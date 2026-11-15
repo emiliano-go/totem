@@ -1915,16 +1915,24 @@ def memory_graph(
 ) -> dict:
     """Return the entity graph around one name, or the whole graph summary."""
     limit = max(1, min(int(limit), 200))
-    rows = conn.execute(
-        "SELECT e.id, e.kind, e.name, COUNT(l.item_id) "
-        "FROM memory_entities e LEFT JOIN memory_entity_links l ON l.entity_id = e.id "
-        "GROUP BY e.id, e.kind, e.name ORDER BY e.kind, e.name LIMIT ?",
-        (limit,),
-    ).fetchall()
+    if entity is None:
+        rows = conn.execute(
+            "SELECT e.id, e.kind, e.name, COUNT(l.item_id) "
+            "FROM memory_entities e LEFT JOIN memory_entity_links l ON l.entity_id = e.id "
+            "GROUP BY e.id, e.kind, e.name ORDER BY e.kind, e.name LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT e.id, e.kind, e.name, COUNT(l.item_id) "
+            "FROM memory_entities e LEFT JOIN memory_entity_links l ON l.entity_id = e.id "
+            "WHERE e.name LIKE ? "
+            "GROUP BY e.id, e.kind, e.name ORDER BY e.kind, e.name LIMIT ?",
+            (f"%{entity}%", limit),
+        ).fetchall()
     entities = [
         {"id": row[0], "kind": row[1], "name": row[2], "items": int(row[3])}
         for row in rows
-        if entity is None or entity.lower() in row[2].lower()
     ]
     if entity is not None and not entities:
         return {"entity": entity, "entities": [], "items": [], "relations": []}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 (2026-11-15)
+
+### Fixes
+
+- **Entity search.** `memory_graph` filters by entity before applying the row
+  limit, so a path or symbol outside the first page still resolves.
 ## 0.10.0 (2026-11-15)
 
 ### Memory operating loop
