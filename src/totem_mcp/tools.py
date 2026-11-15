@@ -13,6 +13,7 @@ from pathlib import Path
 import turso
 
 from .conflicts import detect_conflicts
+from .file_summary import summarize_file
 from .db import (
     atomic,
     get_operation,
@@ -1117,6 +1118,7 @@ def memory_search(
     limit: int = 20,
     as_of: str | None = None,
     include_expired: bool = False,
+    include_file_state: bool = False,
 ) -> list[dict]:
     """Hybrid lexical and dense search over the whole memory corpus."""
     from .context import _parse_as_of
@@ -1136,6 +1138,8 @@ def memory_search(
         if types and item.type.value not in types:
             continue
         if tag_set and not (tag_set & set(item.tags)):
+            continue
+        if not include_file_state and _is_file_state_item(item):
             continue
         score = (
             0.50 * candidate.fused
@@ -1170,6 +1174,17 @@ def memory_search(
             d["warnings"] = warnings
         results.append(d)
     return results
+
+
+def _is_file_state_item(item) -> bool:
+    metadata = item.metadata or {}
+    if metadata.get("fileKind") == "file_tldr":
+        return True
+    return (
+        item.type.value == "implementation"
+        and item.title.startswith("File:")
+        and item.statement.startswith(("Read ", "Patched ", "Changed "))
+    )
 
 
 _NEGATIONS = {"not", "never", "no", "cannot", "can't", "without", "deprecated"}
@@ -1344,6 +1359,251 @@ def totem_init(project: str | None = None) -> dict:
     db_path = get_db_path(project)
     project_dir = db_path.parent.parent
     return init_project(project_dir)
+
+
+@atomic
+def memory_file_context(
+    conn: turso.Connection,
+    path: str,
+    reason: str | None = None,
+    statement: str | None = None,
+    details: str | None = None,
+    tags: list[str] | None = None,
+    refresh: bool = True,
+    title: str | None = None,
+) -> dict:
+    """Return and refresh one file's current-state TLDR.
+
+    The memory is keyed by project-relative path and content hash. An unchanged
+    file returns the cached TLDR with ``fresh: true`` and performs no write.
+    """
+    root = project_root(conn)
+    try:
+        file_path = contained_path(path, root)
+    except EvidencePathError as e:
+        return {"error": str(e)}
+    if not file_path.is_file():
+        return {"error": f"File not found: {path}"}
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except (PermissionError, UnicodeDecodeError) as e:
+        return {"error": f"Cannot read {path}: {e}"}
+
+    try:
+        rel_path = file_path.relative_to(Path(root).resolve()).as_posix()
+    except ValueError:
+        rel_path = file_path.as_posix()
+    summary_text = text[:1_000_000]
+    summary = summarize_file(rel_path, summary_text)
+    blob_hash = hash_content(text)
+    content_hash = hash_content(text)
+
+    existing_id = (
+        find_locator_item_by_path(conn, rel_path)
+        or find_locator_item_by_path(conn, file_path.as_posix())
+        or find_locator_item_by_path(conn, path)
+    )
+    existing = get_item(conn, existing_id) if existing_id else None
+    existing_meta = (existing.metadata or {}) if existing else {}
+    is_file_state = existing_meta.get("fileKind") == "file_tldr"
+    fresh = bool(existing and is_file_state and existing_meta.get("blobHash") == blob_hash)
+
+    symbols = [symbol.to_dict() for symbol in summary.symbols]
+    tldr = (statement or summary.tldr).strip()[:800]
+    if details is None:
+        lines = []
+        for symbol in summary.symbols:
+            line = f"{symbol.kind} {symbol.signature or symbol.name}"
+            if symbol.detail:
+                line += f": {symbol.detail}"
+            lines.append(line)
+        details = "\n".join(lines)[:2000] or None
+    item_title = (title or f"File: {rel_path}")[:200]
+    item_tags = _normalize_tags(list(dict.fromkeys(
+        ["file-tldr", summary.language, *(tags or [])]
+    )))
+    metadata = {
+        "kind": "module",
+        "fileKind": "file_tldr",
+        "subject": rel_path,
+        "path": rel_path,
+        "blobHash": blob_hash,
+        "contentHash": content_hash,
+        "language": summary.language,
+        "lineCount": summary.line_count,
+        "byteCount": summary.byte_count,
+        "symbols": symbols,
+        **({"reason": reason} if reason else {}),
+    }
+
+    result = {
+        "path": rel_path,
+        "title": item_title,
+        "tldr": tldr,
+        "language": summary.language,
+        "symbols": symbols,
+        "blobHash": blob_hash,
+        "fresh": fresh,
+        "changed": bool(existing and not fresh),
+        "created": existing is None,
+    }
+    if fresh or (existing is not None and not refresh):
+        result.update({
+            "id": existing.id,
+            "tldr": existing.statement if fresh else tldr,
+            "updatedAt": existing.updated_at,
+        })
+        return result
+
+    evidence = Evidence(
+        path=rel_path,
+        startLine=1,
+        endLine=max(1, text.count("\n") + 1),
+        contentHash=content_hash,
+        kind="source",
+        capturedAt=_now(),
+        blobHash=blob_hash,
+    )
+    if existing is not None:
+        update_item_row(
+            conn,
+            existing.id,
+            {
+                "title": item_title,
+                "statement": tldr,
+                "details": details,
+                "tags": json.dumps(item_tags),
+                "evidence": json.dumps([evidence.model_dump(by_alias=True)]),
+                "metadata": json.dumps(metadata),
+                "importance": 0.4,
+                "confidence": 0.9,
+                "asserted_by": "source",
+                "updated_at": _now(),
+            },
+        )
+        upsert_locator(conn, existing.id, rel_path, "file_tldr")
+        insert_history(
+            conn, existing.id, "file_context_refreshed",
+            reason=reason or "file content changed",
+            source="memory_file_context",
+        )
+        result.update({"id": existing.id, "updatedAt": _now()})
+        return result
+
+    item = MemoryItem(
+        type=MemoryType.IMPLEMENTATION,
+        title=item_title,
+        statement=tldr,
+        details=details,
+        tags=item_tags,
+        evidence=[evidence],
+        metadata=metadata,
+        asserted_by="source",
+        confidence=0.9,
+        importance=0.4,
+    )
+    insert_item(conn, item)
+    try:
+        upsert_locator(conn, item.id, rel_path, "file_tldr")
+    except turso.IntegrityError:
+        conn.execute("DELETE FROM memory_items WHERE id = ?", (item.id,))
+        return memory_file_context(
+            conn, path, reason=reason, statement=statement,
+            details=details, tags=tags, refresh=refresh, title=title,
+        )
+    insert_history(
+        conn, item.id, "file_context_created",
+        reason=reason or "initial file TLDR", source="memory_file_context",
+    )
+    result.update({"id": item.id, "updatedAt": _now()})
+    return result
+
+
+@atomic
+def memory_session_summary(
+    conn: turso.Connection,
+    session_id: str,
+    summary: str,
+    files: list[str] | None = None,
+    commit: str | None = None,
+    title: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """Create or update one compact summary for a work session."""
+    text = _clean_summary(summary)[:800]
+    if not text:
+        raise ValueError("summary is required")
+    paths = list(dict.fromkeys(
+        str(path).replace("\\", "/") for path in (files or []) if str(path).strip()
+    ))
+    commit = commit or get_head_commit()
+    details = "\n".join(f"- {path}" for path in paths[:80])[:2000] or None
+    item_title = (title or f"Session: {text[:80]}")[:200]
+    metadata = {
+        "observation": text,
+        "kind": "session_summary",
+        "sessionId": session_id,
+        "files": paths,
+        **({"commit": commit} if commit else {}),
+        **({"reason": reason} if reason else {}),
+    }
+    existing = None
+    if session_id:
+        row = conn.execute(
+            "SELECT id FROM memory_items "
+            "WHERE status != 'deleted' "
+            "AND json_extract(metadata, '$.kind') = 'session_summary' "
+            "AND json_extract(metadata, '$.sessionId') = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        existing = get_item(conn, row[0]) if row else None
+
+    if existing is not None:
+        update_item_row(
+            conn,
+            existing.id,
+            {
+                "title": item_title,
+                "statement": text,
+                "details": details,
+                "metadata": json.dumps(metadata),
+                "updated_at": _now(),
+            },
+        )
+        insert_history(
+            conn, existing.id, "session_summary_updated",
+            reason=reason or "session progressed", source="memory_session_summary",
+        )
+        return {
+            "id": existing.id, "action": "updated", "sessionId": session_id,
+            "files": paths, "commit": commit,
+        }
+
+    item = MemoryItem(
+        type=MemoryType.OBSERVATION,
+        title=item_title,
+        statement=text,
+        details=details,
+        tags=["session-summary", "work-log"],
+        metadata=metadata,
+        asserted_by="agent",
+        confidence=0.8,
+        importance=0.5,
+    )
+    insert_item(conn, item)
+    insert_history(
+        conn, item.id, "session_summary_created",
+        reason=reason or "session summary", source="memory_session_summary",
+    )
+    return {
+        "id": item.id, "action": "created", "sessionId": session_id,
+        "files": paths, "commit": commit,
+    }
+
+
+def _clean_summary(text: str) -> str:
+    return " ".join((text or "").split())
 
 
 @atomic

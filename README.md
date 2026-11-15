@@ -115,6 +115,33 @@ Context returns `abstained: true` with an empty body when no memory clears the
 score threshold (`TOTEM_ABSTAIN_SCORE`, default 0.12). Critical classes, path
 matches, and stale knowledge still surface.
 
+### File-state memory
+
+File reads and writes can store one current-state TLDR per file instead of a
+change log. The TLDR is deterministic and keyed by the file content hash:
+
+```bash
+totem file-context src/auth.py
+```
+
+The result includes `tldr`, `symbols`, `blobHash`, and `fresh`. An unchanged
+file returns `fresh: true` without writing. A changed file returns
+`changed: true` and refreshes the same memory. This is the intended cache for
+avoiding re-reads: check `fresh` before asking the model to read the whole file.
+
+`memory_session_summary` stores one compact summary per work session, keyed by
+`session_id`; repeated calls update the same record.
+
+Legacy file-change records can be converted in place:
+
+```bash
+totem files backfill
+totem files backfill --apply --prune-missing
+```
+
+File-state TLDRs are excluded from generic `memory_search` results. Pass
+`--include-file-state` when you want them.
+
 ### Optional static embeddings
 
 The default dense leg is dependency-free. For better paraphrase and vocabulary

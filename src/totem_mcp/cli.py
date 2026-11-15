@@ -15,6 +15,7 @@ from .tools import (
     memory_create,
     memory_delete,
     memory_export,
+    memory_file_context,
     memory_gc,
     memory_get,
     memory_history,
@@ -507,6 +508,7 @@ def commands(ctx: click.Context, limit: int) -> None:
 @click.option("--limit", default=20, type=int)
 @click.option("--as-of", "as_of", default=None, help="Evaluate temporal validity at this ISO timestamp")
 @click.option("--include-expired", is_flag=True, default=False)
+@click.option("--include-file-state", is_flag=True, default=False, help="Include file-state TLDRs")
 @click.pass_context
 def search(
     ctx: click.Context,
@@ -517,6 +519,7 @@ def search(
     limit: int,
     as_of: str | None,
     include_expired: bool,
+    include_file_state: bool,
 ) -> None:
     """Hybrid tag + full-text search."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -531,6 +534,7 @@ def search(
             limit=limit,
             as_of=as_of,
             include_expired=include_expired,
+            include_file_state=include_file_state,
         )
         click.echo(json.dumps(result, indent=2))
 
@@ -575,6 +579,65 @@ def context(
             include_expired=include_expired,
         )
         click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("file-context")
+@click.argument("path")
+@click.option("--reason", default="manual file context")
+@click.option("--refresh/--cached", default=True, help="Refresh the TLDR when content changed")
+@click.pass_context
+def file_context_cmd(
+    ctx: click.Context, path: str, reason: str, refresh: bool
+) -> None:
+    """Return a file's current-state TLDR and freshness."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_file_context(conn, path, reason=reason, refresh=refresh)
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.group("files")
+def files_group() -> None:
+    """File-state memory maintenance."""
+
+
+@files_group.command("backfill")
+@click.option("--apply", "apply_", is_flag=True, help="Write the backfilled TLDRs")
+@click.option("--prune-missing", is_flag=True, help="Delete legacy file records whose source file is gone")
+@click.pass_context
+def files_backfill(ctx: click.Context, apply_: bool, prune_missing: bool) -> None:
+    """Convert legacy file-change records into current-state TLDRs."""
+    from .db import get_all_items
+
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        items = [
+            item for item in get_all_items(conn)
+            if item.metadata
+            and item.metadata.get("path")
+            and item.metadata.get("fileKind") != "file_tldr"
+        ]
+        results = []
+        for item in items:
+            if not apply_:
+                results.append({"id": item.id, "path": item.metadata["path"]})
+                continue
+            result = memory_file_context(
+                conn, item.metadata["path"], reason="legacy file memory backfill"
+            )
+            if (
+                prune_missing
+                and result.get("error", "").startswith("File not found:")
+            ):
+                memory_delete(
+                    conn, item.id,
+                    reason="legacy file-state record: source file no longer exists",
+                )
+                result = {**result, "pruned": True}
+            results.append({"id": item.id, **result})
+        click.echo(json.dumps({
+            "dryRun": not apply_,
+            "count": len(results),
+            "items": results,
+        }, indent=2))
 
 
 @cli.command()

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.9.2 (2026-11-14)
+
+### File-state memory
+
+- **File TLDRs.** `memory_file_context` reads a file, stores one current-state
+  TLDR keyed by path and content hash, and returns `fresh: true` without a write
+  when the bytes are unchanged.
+- **Deterministic summaries.** Python AST, Markdown headings, JSON/YAML keys,
+  JavaScript exports, and shell functions produce a cheap outline with no model
+  call.
+- **Session summaries.** `memory_session_summary` creates or updates one
+  summary per session from the changed paths and work description.
+- **Search hygiene.** File-state TLDRs are excluded from generic search by
+  default; pass `include_file_state` to inspect them.
+- **Backfill.** `totem files backfill` converts legacy file-change records into
+  current-state TLDRs; `--prune-missing` removes records whose source file is
+  gone.
+
 ## 0.9.1 (2026-11-14)
 
 ### Fixes
