@@ -13,6 +13,7 @@ ranking stays advisory until it wins on held-out cases.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -25,6 +26,9 @@ class Case:
     task: str = ""
     paths: list[str] = field(default_factory=list)
     expected: list[str] = field(default_factory=list)
+    kind: str = "single"
+    as_of: str | None = None
+    include_expired: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "Case":
@@ -34,6 +38,9 @@ class Case:
             task=str(data.get("task") or ""),
             paths=[str(p) for p in data.get("paths") or []],
             expected=[str(i) for i in data.get("expected") or []],
+            kind=str(data.get("kind") or "single"),
+            as_of=str(data["as_of"]) if data.get("as_of") else None,
+            include_expired=bool(data.get("include_expired", False)),
         )
 
 
@@ -69,7 +76,10 @@ def evaluate(cases: list[Case], runner, k: int = 10) -> dict:
     """Run every case through ``runner(case) -> engineering_context result``."""
     recalls: list[float] = []
     reciprocal: list[float] = []
+    ndcg: list[float] = []
     latencies: list[float] = []
+    abstention_hits = 0
+    abstention_total = 0
     details: list[dict] = []
     for case in cases:
         started = time.perf_counter()
@@ -81,19 +91,43 @@ def evaluate(cases: list[Case], runner, k: int = 10) -> dict:
         latencies.append(latency)
         selected = list(result.get("selectedIds") or [])[:k]
         expected = set(case.expected)
-        if expected:
+        if case.kind == "abstention":
+            abstention_total += 1
+            abstained = bool(result.get("abstained")) or not selected
+            recall = 1.0 if abstained else 0.0
+            rr = recall
+            if abstained:
+                abstention_hits += 1
+                recalls.append(1.0)
+                reciprocal.append(1.0)
+                ndcg.append(1.0)
+            else:
+                recalls.append(0.0)
+                reciprocal.append(0.0)
+                ndcg.append(0.0)
+        elif expected:
             recall = len(expected & set(selected)) / len(expected)
             rr = 0.0
+            dcg = 0.0
             for rank, item_id in enumerate(selected, start=1):
                 if item_id in expected:
-                    rr = 1.0 / rank
-                    break
+                    if rr == 0.0:
+                        rr = 1.0 / rank
+                    dcg += 1.0 / math.log2(rank + 1)
+            ideal = sum(
+                1.0 / math.log2(rank + 1)
+                for rank in range(1, min(len(expected), k) + 1)
+            )
+            ndcg.append(min(1.0, dcg / ideal) if ideal else 0.0)
         else:
             recall, rr = 1.0, 1.0
+            ndcg.append(1.0)
         recalls.append(recall)
         reciprocal.append(rr)
         details.append({
             "name": case.name, "recall": recall, "rr": rr,
+            "ndcg": ndcg[-1],
+            "kind": case.kind,
             "latency_ms": round(latency, 2),
             "selected": selected[:5],
             **({"error": result["error"]} if result.get("error") else {}),
@@ -103,6 +137,12 @@ def evaluate(cases: list[Case], runner, k: int = 10) -> dict:
         "k": k,
         f"recall_at_{k}": round(statistics.fmean(recalls), 4) if recalls else 0.0,
         "mrr": round(statistics.fmean(reciprocal), 4) if reciprocal else 0.0,
+        f"ndcg_at_{k}": round(statistics.fmean(ndcg), 4) if ndcg else 0.0,
+        "abstention_accuracy": (
+            round(abstention_hits / abstention_total, 4)
+            if abstention_total else None
+        ),
+        "abstention_cases": abstention_total,
         "p95_ms": round(_p95(latencies), 2),
         "mean_ms": round(statistics.fmean(latencies), 2) if latencies else 0.0,
         "cases": details,

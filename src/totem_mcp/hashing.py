@@ -128,6 +128,7 @@ def check_staleness(
     blob_hash: str | None = None,
     symbol_hash: str | None = None,
     root: str | Path | None = None,
+    cache: dict | None = None,
 ) -> bool:
     """Return True if evidence is stale.
 
@@ -137,30 +138,42 @@ def check_staleness(
     the old presence-only behaviour. Then whole-file blob equality, then the
     line-range hash.
     """
+    key = (
+        str(path), start_line, end_line, stored_hash, symbol, blob_hash,
+        symbol_hash, str(root),
+    )
+    if cache is not None and key in cache:
+        return cache[key]
     try:
-        path = contained_path(path, root)
+        resolved = contained_path(path, root)
     except EvidencePathError:
         # An evidence path that escapes the project cannot be trusted as fresh.
-        return True
-    text = read_file_text(path)
-    if text is None:
-        return True
-    if symbol:
-        body_hash = hash_symbol(path, symbol, text=text)
-        if body_hash is None:
-            return True  # symbol no longer resolvable in the file
-        if symbol_hash:
-            return body_hash != symbol_hash
-        return False  # legacy: presence-only
-    if blob_hash:
-        return hash_content(text) != blob_hash
-    content = read_range(path, start_line, end_line)
-    if content is None:
-        return True
-    return hash_content(content) != stored_hash
+        result = True
+    else:
+        text = read_file_text(resolved)
+        if text is None:
+            result = True
+        elif symbol:
+            body_hash = hash_symbol(resolved, symbol, text=text)
+            if body_hash is None:
+                result = True  # symbol no longer resolvable in the file
+            elif symbol_hash:
+                result = body_hash != symbol_hash
+            else:
+                result = False  # legacy: presence-only
+        elif blob_hash:
+            result = hash_content(text) != blob_hash
+        else:
+            content = read_range(resolved, start_line, end_line)
+            result = True if content is None else hash_content(content) != stored_hash
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
-def verification_fresh(item, root: str | Path | None = None) -> bool:
+def verification_fresh(
+    item, root: str | Path | None = None, cache: dict | None = None
+) -> bool:
     """True only while a verification's justification still holds.
 
     Truth-maintenance idea: evidence is the premise, the verification the
@@ -179,6 +192,7 @@ def verification_fresh(item, root: str | Path | None = None) -> bool:
             blob_hash=ev.blob_hash,
             symbol_hash=ev.symbol_hash,
             root=root,
+            cache=cache,
         ):
             return False
     return True

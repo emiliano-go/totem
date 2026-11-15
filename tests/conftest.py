@@ -24,6 +24,11 @@ def _isolate_home_and_project_init(monkeypatch, tmp_path):
     monkeypatch.setattr(
         db_mod, "init_project", lambda project_dir: {"path": str(project_dir)}
     )
+    # Tests must not download or load the optional static model. Individual
+    # tests can override this with monkeypatch.setenv.
+    monkeypatch.setenv("TOTEM_EMBEDDING_BACKEND", "hash")
+    from totem_mcp import embeddings
+    embeddings.reset()
 
 
 @pytest.fixture

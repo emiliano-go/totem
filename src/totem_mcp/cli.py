@@ -11,6 +11,7 @@ from .db import db_connection
 from .tools import (
     memory_audit,
     memory_check_record,
+    memory_consolidate,
     memory_create,
     memory_delete,
     memory_export,
@@ -22,6 +23,8 @@ from .tools import (
     memory_recent,
     memory_revalidate,
     memory_search,
+    memory_feedback,
+    memory_train_models,
     memory_update,
     memory_verify,
     resolve_conflict,
@@ -58,6 +61,8 @@ def cli(ctx: click.Context, project: str | None) -> None:
 @click.option("--asserted-by", "asserted_by", default=None, type=click.Choice([
     "user", "test", "source", "git", "doc", "runtime", "agent",
 ]), help="Who asserted the claim (sets default confidence)")
+@click.option("--valid-from", "valid_from", default=None, help="ISO timestamp when the claim starts being true")
+@click.option("--valid-to", "valid_to", default=None, help="ISO timestamp when the claim stops being true")
 @click.pass_context
 def create(
     ctx: click.Context,
@@ -72,6 +77,8 @@ def create(
     metadata: str | None,
     related: str | None,
     asserted_by: str | None,
+    valid_from: str | None,
+    valid_to: str | None,
 ) -> None:
     """Create a new memory item."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -89,6 +96,8 @@ def create(
                 metadata=json.loads(metadata) if metadata else None,
                 related_memory_ids=[r.strip() for r in related.split(",")] if related else None,
                 asserted_by=asserted_by,
+                valid_from=valid_from,
+                valid_to=valid_to,
             )
             click.echo(json.dumps(result, indent=2))
         except ValueError as e:
@@ -119,6 +128,8 @@ def get(ctx: click.Context, item_id: str, no_evidence: bool) -> None:
 @click.option("--importance", default=None, type=float)
 @click.option("--evidence", default=None, help="JSON array of evidence objects")
 @click.option("--metadata", default=None, help="JSON object of extra metadata")
+@click.option("--valid-from", "valid_from", default=None, help="ISO validity start (empty clears)")
+@click.option("--valid-to", "valid_to", default=None, help="ISO validity end (empty clears)")
 @click.pass_context
 def update(
     ctx: click.Context,
@@ -132,6 +143,8 @@ def update(
     importance: float | None,
     evidence: str | None,
     metadata: str | None,
+    valid_from: str | None,
+    valid_to: str | None,
 ) -> None:
     """Update a memory item. Reason is required."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -148,6 +161,8 @@ def update(
                 importance=importance,
                 evidence=json.loads(evidence) if evidence else None,
                 metadata=json.loads(metadata) if metadata else None,
+                valid_from=valid_from,
+                valid_to=valid_to,
             )
             if result is None:
                 raise click.ClickException(f"Item {item_id} not found")
@@ -232,6 +247,48 @@ def audit(ctx: click.Context) -> None:
             raise click.exceptions.Exit(1)
 
 
+@cli.command("feedback")
+@click.argument("item_id")
+@click.option("--signal", required=True, type=click.Choice(
+    ["useful", "wrong", "irrelevant", "verified", "stale"]
+))
+@click.option("--query", default=None, help="Query or task the item was considered for")
+@click.option("--tags", default=None, help="Comma-separated tags supplied with the query")
+@click.option("--weight", default=1.0, type=float, help="Relative weight (0-10)")
+@click.pass_context
+def feedback_cmd(
+    ctx: click.Context,
+    item_id: str,
+    signal: str,
+    query: str | None,
+    tags: str | None,
+    weight: float,
+) -> None:
+    """Record retrieval feedback for a memory."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        result = memory_feedback(
+            conn, item_id, signal, query=query,
+            tags=[t.strip() for t in tags.split(",")] if tags else None,
+            weight=weight,
+        )
+        click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("consolidate")
+@click.option("--apply", "apply_", is_flag=True, help="Apply the consolidation (default dry-run)")
+@click.option("--threshold", default=0.92, type=float, help="Cosine similarity threshold")
+@click.pass_context
+def consolidate_cmd(
+    ctx: click.Context, apply_: bool, threshold: float
+) -> None:
+    """Cluster near-duplicate memories and optionally supersede duplicates."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            memory_consolidate(conn, apply=apply_, threshold=threshold),
+            indent=2,
+        ))
+
+
 @cli.command("eval")
 @click.option("--cases", "cases_file", default=None, type=click.Path(exists=True), help="Golden case JSON")
 @click.option("--out", default=None, help="Write the report to this path")
@@ -263,6 +320,7 @@ def eval_cmd(
             lambda case: engineering_context(
                 conn, tags=case.tags, task=case.task or None,
                 paths=case.paths or None,
+                as_of=case.as_of, include_expired=case.include_expired,
             ),
             k=k,
         )
@@ -298,6 +356,39 @@ def models_validate(ctx: click.Context, min_test: int, tolerance: float) -> None
             validate_and_promote(conn, min_test=min_test, tolerance=tolerance),
             indent=2,
         ))
+
+
+@models_group.command("train")
+@click.option("--min-examples", default=24, type=int)
+@click.pass_context
+def models_train(ctx: click.Context, min_examples: int) -> None:
+    """Fit the reranker and calibrator from feedback."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            memory_train_models(conn, min_examples=min_examples), indent=2
+        ))
+
+
+@models_group.command("status")
+def models_status() -> None:
+    """Report the configured retrieval encoder."""
+    from .embeddings import status
+
+    click.echo(json.dumps(status(), indent=2))
+
+
+@models_group.command("pull")
+def models_pull() -> None:
+    """Download and load the configured static encoder, then report status."""
+    from .embeddings import get_static_encoder, status
+
+    encoder = get_static_encoder()
+    click.echo(json.dumps(status(), indent=2))
+    if encoder is None:
+        raise click.ClickException(
+            "static encoder unavailable; install totem-mcp[embeddings] and "
+            "check TOTEM_EMBEDDING_BACKEND/TOTEM_EMBEDDING_MODEL"
+        )
 
 
 @cli.command()
@@ -414,6 +505,8 @@ def commands(ctx: click.Context, limit: int) -> None:
 @click.option("--tags", default=None, help="Comma-separated tags")
 @click.option("--include-stale", is_flag=True, default=False)
 @click.option("--limit", default=20, type=int)
+@click.option("--as-of", "as_of", default=None, help="Evaluate temporal validity at this ISO timestamp")
+@click.option("--include-expired", is_flag=True, default=False)
 @click.pass_context
 def search(
     ctx: click.Context,
@@ -422,6 +515,8 @@ def search(
     tags: str | None,
     include_stale: bool,
     limit: int,
+    as_of: str | None,
+    include_expired: bool,
 ) -> None:
     """Hybrid tag + full-text search."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -434,6 +529,8 @@ def search(
             tags=tag_list,
             include_stale=include_stale,
             limit=limit,
+            as_of=as_of,
+            include_expired=include_expired,
         )
         click.echo(json.dumps(result, indent=2))
 
@@ -445,6 +542,9 @@ def search(
 @click.option("--types", default=None, help="Comma-separated memory types")
 @click.option("--include-stale", is_flag=True, default=False)
 @click.option("--current-task", default=None, help="What you're working on right now (boosts relevant memories)")
+@click.option("--max-item-chars", default=None, type=int)
+@click.option("--as-of", "as_of", default=None, help="Evaluate temporal validity at this ISO timestamp")
+@click.option("--include-expired", is_flag=True, default=False)
 @click.pass_context
 def context(
     ctx: click.Context,
@@ -454,6 +554,9 @@ def context(
     types: str | None,
     include_stale: bool,
     current_task: str | None,
+    max_item_chars: int | None,
+    as_of: str | None,
+    include_expired: bool,
 ) -> None:
     """Assemble engineering context (§48 output ordering)."""
     with db_connection(project=ctx.obj.get("project")) as conn:
@@ -467,6 +570,9 @@ def context(
             types=type_list,
             include_stale=include_stale,
             current_task=current_task,
+            max_item_chars=max_item_chars,
+            as_of=as_of,
+            include_expired=include_expired,
         )
         click.echo(json.dumps(result, indent=2))
 

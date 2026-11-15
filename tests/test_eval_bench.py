@@ -43,3 +43,28 @@ def test_gate_detects_regression_and_latency():
 
     slow = {"recall_at_10": 0.9, "mrr": 0.8, "p95_ms": 5000}
     assert "latency_budget" in gate(baseline, slow, p95_ms=2000)["failures"]
+
+
+def test_abstention_cases_and_ndcg():
+    cases = [
+        Case("none", kind="abstention", expected=[]),
+        Case("hit", expected=["a"]),
+    ]
+
+    def runner(case):
+        if case.kind == "abstention":
+            return {"abstained": True, "selectedIds": []}
+        return {"selectedIds": ["a", "b"]}
+
+    report = evaluate(cases, runner, k=10)
+    assert report["abstention_cases"] == 1
+    assert report["abstention_accuracy"] == 1.0
+    assert report["ndcg_at_10"] == 1.0
+
+
+def test_abstention_failure_is_counted():
+    report = evaluate(
+        [Case("none", kind="abstention", expected=[])],
+        lambda _case: {"abstained": False, "selectedIds": ["a"]},
+    )
+    assert report["abstention_accuracy"] == 0.0

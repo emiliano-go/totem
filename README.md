@@ -68,7 +68,76 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 - **Evidence-derived verification**: `memory_verify` consumes a recorded check, not a claim
 - **Calibrated trust**: dependency-free Platt + split-conformal trust sets, advisory until validated
 - **Hybrid ranking**: FTS + deterministic dense encoder with reciprocal-rank fusion and MMR
+- **Optional static embeddings**: Model2Vec `potion-retrieval-32M` behind an extra, with a hash fallback
+- **Corpus-wide retrieval**: FTS, dense, evidence paths, symbols, tags, and relation hops, not a tag gate
+- **Temporal validity**: `valid_from` / `valid_to` with `as_of` retrieval
+- **Feedback loop**: record useful/wrong signals and train the reranker and calibrator
+- **Abstention and consolidation**: no noise when nothing is relevant; near-duplicate clustering
 - **Bounded MCP tools**: output caps, rate limits, deadlines, and a tool-manifest digest
+
+### Retrieval v2
+
+`engineering_context` and `memory_search` build candidates over the whole
+memory database instead of starting from tag matches. Lexical, dense, path,
+symbol, tag, and two-hop relation signals are fused, then the deterministic
+scope and type precedence decides the final order. Tags are a boost; a memory
+without the requested tag can still surface when the task, code path, or a
+relation makes it relevant.
+
+Temporal claims:
+
+```bash
+totem create --type gotcha --title "Old queue" --statement "..." --tags queue \
+  --valid-from 2026-01-01T00:00:00Z --valid-to 2026-02-01T00:00:00Z
+totem context --tags queue --as-of 2026-01-15T00:00:00Z
+```
+
+Feedback and learning:
+
+```bash
+totem feedback <id> --signal useful --query "retry queue" --tags queue
+totem models train --min-examples 24
+totem models status
+```
+
+`memory_train_models` fits a linear reranker over candidate features and a
+conformal calibrator over claim features. It refuses to train until feedback
+has both positive and negative examples, so the learned path stays advisory.
+
+Consolidation is dry-run by default:
+
+```bash
+totem consolidate --threshold 0.92
+totem consolidate --threshold 0.92 --apply
+```
+
+Context returns `abstained: true` with an empty body when no memory clears the
+score threshold (`TOTEM_ABSTAIN_SCORE`, default 0.12). Critical classes, path
+matches, and stale knowledge still surface.
+
+### Optional static embeddings
+
+The default dense leg is dependency-free. For better paraphrase and vocabulary
+recall, install the optional static encoder:
+
+```bash
+pip install 'totem-mcp[embeddings]'
+totem models pull          # downloads and warms potion-retrieval-32M
+totem models status
+```
+
+`minishlab/potion-retrieval-32M` is a 32M Model2Vec model: CPU-only, numpy
+based, no torch. It is downloaded from Hugging Face on first use. Configure it
+with environment variables:
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `TOTEM_EMBEDDING_BACKEND` | `auto` (default), `model2vec`, `hash` | `auto` uses Model2Vec when installed, otherwise the hash encoder. |
+| `TOTEM_EMBEDDING_MODEL` | Hugging Face id or directory | Defaults to `minishlab/potion-retrieval-32M`. |
+| `TOTEM_EMBEDDING_LOCAL` | local directory | Pre-pulled model path; wins over the model id for offline installs. |
+
+If the package or model cannot be loaded, Totem falls back to the hash encoder
+and reports the reason from `totem models status`.
 
 ## How it works
 

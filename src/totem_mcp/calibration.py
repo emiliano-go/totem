@@ -71,15 +71,30 @@ class ClaimFeatures:
         return self.as_list()
 
 
-def extract_features(item, root: Path | None = None) -> ClaimFeatures:
+def _stale(ev, root: Path | None, cache: dict | None) -> bool:
+    key = (
+        ev.path, ev.start_line, ev.end_line, ev.content_hash,
+        ev.symbol, ev.blob_hash, ev.symbol_hash,
+    )
+    if cache is not None and key in cache:
+        return cache[key]
+    stale = check_staleness(
+        Path(ev.path), ev.start_line, ev.end_line, ev.content_hash,
+        symbol=ev.symbol, blob_hash=ev.blob_hash,
+        symbol_hash=ev.symbol_hash, root=root,
+    )
+    if cache is not None:
+        cache[key] = stale
+    return stale
+
+
+def extract_features(
+    item, root: Path | None = None, stale_cache: dict | None = None
+) -> ClaimFeatures:
     evidence = list(getattr(item, "evidence", None) or [])
     stale = 0
     for ev in evidence:
-        if check_staleness(
-            Path(ev.path), ev.start_line, ev.end_line, ev.content_hash,
-            symbol=ev.symbol, blob_hash=ev.blob_hash,
-            symbol_hash=ev.symbol_hash, root=root,
-        ):
+        if _stale(ev, root, stale_cache):
             stale += 1
     meta = getattr(item, "metadata", None) or {}
     mode = str(meta.get("verificationMode") or "assertion")
@@ -98,9 +113,11 @@ def extract_features(item, root: Path | None = None) -> ClaimFeatures:
     )
 
 
-def rule_trust(item, root: Path | None = None) -> float:
+def rule_trust(
+    item, root: Path | None = None, stale_cache: dict | None = None
+) -> float:
     """Deterministic trust score, the baseline the calibrated head must beat."""
-    f = extract_features(item, root=root)
+    f = extract_features(item, root=root, stale_cache=stale_cache)
     score = 0.45 * f.confidence
     score += 0.20 * f.verified
     score += 0.10 * f.check_mode

@@ -34,7 +34,7 @@ def _seed(conn):
 def test_export_import_round_trip(fresh_db, tmp_path):
     _seed(fresh_db)
     export = memory_export(fresh_db)
-    assert export["format_version"] == 1
+    assert export["format_version"] == 2
     assert export["schema_version"] >= 4
     assert len(export["relations"]) == 1
 

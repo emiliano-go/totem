@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS memory_items (
     metadata TEXT,
     schema_version INTEGER NOT NULL DEFAULT 1,
     asserted_by TEXT,
-    applicability TEXT
+    applicability TEXT,
+    valid_from TEXT,
+    valid_to TEXT
 );
 """
 
@@ -169,6 +171,32 @@ CREATE TABLE IF NOT EXISTS memory_checks (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS memory_checks_item ON memory_checks (item_id);
+"""
+
+CREATE_EMBEDDINGS = """
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    item_id TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_embeddings_model ON memory_embeddings (model);
+"""
+
+CREATE_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS memory_feedback (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    signal TEXT NOT NULL,
+    query TEXT,
+    tags TEXT,
+    weight REAL NOT NULL DEFAULT 1.0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_feedback_item ON memory_feedback (item_id);
+CREATE INDEX IF NOT EXISTS memory_feedback_signal ON memory_feedback (signal);
 """
 
 
@@ -359,6 +387,8 @@ def _init_db_once(conn: turso.Connection) -> None:
     conn.executescript(CREATE_CONFLICTS)
     conn.executescript(CREATE_HISTORY)
     conn.executescript(CREATE_CHECKS)
+    conn.executescript(CREATE_EMBEDDINGS)
+    conn.executescript(CREATE_FEEDBACK)
     conn.executescript(CREATE_RELATIONS)
     conn.executescript(CREATE_RELATIONS_INDEXES)
     conn.executescript(CREATE_LOCATORS)
@@ -677,6 +707,17 @@ def _migrate_checks_and_chain(conn: turso.Connection) -> None:
         prev = digest
 
 
+def _migrate_retrieval_v2(conn: turso.Connection) -> None:
+    """v11: persisted embeddings, feedback, and temporal validity."""
+    _add_columns(
+        conn,
+        "memory_items",
+        [("valid_from", "valid_from TEXT"), ("valid_to", "valid_to TEXT")],
+    )
+    conn.executescript(CREATE_EMBEDDINGS)
+    conn.executescript(CREATE_FEEDBACK)
+
+
 MIGRATIONS = [
     (2, _migrate_conflicts),
     (3, _migrate_v3),
@@ -687,6 +728,7 @@ MIGRATIONS = [
     (8, _migrate_operations),
     (9, _migrate_locators),
     (10, _migrate_checks_and_chain),
+    (11, _migrate_retrieval_v2),
 ]
 
 
@@ -740,6 +782,16 @@ def _verify_migration(conn: turso.Connection, target: int) -> None:
             missing.add("memory_checks")
         if not _has_index(conn, "memory_checks_item"):
             missing.add("memory_checks_item")
+    elif target == 11:
+        missing = {"valid_from", "valid_to"} - _columns(conn, "memory_items")
+        if not _has_table(conn, "memory_embeddings"):
+            missing.add("memory_embeddings")
+        if not _has_table(conn, "memory_feedback"):
+            missing.add("memory_feedback")
+        if not _has_index(conn, "memory_embeddings_model"):
+            missing.add("memory_embeddings_model")
+        if not _has_index(conn, "memory_feedback_item"):
+            missing.add("memory_feedback_item")
     else:
         missing = set()
     if missing:
@@ -783,6 +835,7 @@ COLUMNS = [
     "confidence", "importance", "evidence", "related_memory_ids",
     "created_at", "updated_at", "verified_at", "metadata",
     "schema_version", "verified_commit", "scope", "asserted_by", "applicability",
+    "valid_from", "valid_to",
 ]
 COL_IDX = {name: i for i, name in enumerate(COLUMNS)}
 # Explicit column list for SELECTs. NEVER use SELECT * on memory_items:
@@ -813,6 +866,8 @@ def _row_to_item(row: tuple) -> MemoryItem:
         verified_commit=row[r["verified_commit"]],
         asserted_by=row[r["asserted_by"]],
         applicability=row[r["applicability"]],
+        valid_from=row[r["valid_from"]],
+        valid_to=row[r["valid_to"]],
         metadata=json.loads(row[r["metadata"]]) if row[r["metadata"]] else None,
     )
 
@@ -823,8 +878,8 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
            (id, type, title, statement, statement_normalized, details, tags, status,
             confidence, importance, scope, evidence, related_memory_ids, created_at,
             updated_at, verified_at, verified_commit, metadata, schema_version,
-            asserted_by, applicability)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            asserted_by, applicability, valid_from, valid_to)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item.id,
             item.type.value,
@@ -847,6 +902,8 @@ def insert_item(conn: turso.Connection, item: MemoryItem) -> None:
             SCHEMA_VERSION,
             item.asserted_by,
             item.applicability,
+            item.valid_from,
+            item.valid_to,
         ),
     )
 
@@ -1630,6 +1687,134 @@ def get_history(conn: turso.Connection, item_id: str) -> list[dict]:
             "commit": r[10],
             "request_id": r[11],
             "timestamp": r[12],
+        }
+        for r in rows
+    ]
+
+
+def get_embedding(conn: turso.Connection, item_id: str, model: str) -> dict | None:
+    row = conn.execute(
+        "SELECT model, dim, vector, content_hash, updated_at "
+        "FROM memory_embeddings WHERE item_id = ? AND model = ?",
+        (item_id, model),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "model": row[0],
+        "dim": row[1],
+        "vector": json.loads(row[2]),
+        "contentHash": row[3],
+        "updatedAt": row[4],
+    }
+
+
+def get_embeddings(conn: turso.Connection, model: str) -> dict[str, dict]:
+    rows = conn.execute(
+        "SELECT item_id, dim, vector, content_hash, updated_at "
+        "FROM memory_embeddings WHERE model = ?",
+        (model,),
+    ).fetchall()
+    return {
+        row[0]: {
+            "dim": row[1],
+            "vector": json.loads(row[2]),
+            "contentHash": row[3],
+            "updatedAt": row[4],
+        }
+        for row in rows
+    }
+
+
+def upsert_embedding(
+    conn: turso.Connection,
+    item_id: str,
+    model: str,
+    dim: int,
+    vector: list[float],
+    content_hash: str,
+) -> None:
+    from datetime import datetime, timezone
+
+    conn.execute(
+        "INSERT INTO memory_embeddings "
+        "(item_id, model, dim, vector, content_hash, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(item_id) DO UPDATE SET "
+        "model = excluded.model, dim = excluded.dim, vector = excluded.vector, "
+        "content_hash = excluded.content_hash, updated_at = excluded.updated_at",
+        (
+            item_id, model, int(dim), json.dumps(vector),
+            content_hash, datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
+def delete_embedding(conn: turso.Connection, item_id: str) -> None:
+    conn.execute("DELETE FROM memory_embeddings WHERE item_id = ?", (item_id,))
+
+
+FEEDBACK_SIGNALS = ("useful", "wrong", "irrelevant", "verified", "stale")
+
+
+def record_feedback(
+    conn: turso.Connection,
+    item_id: str,
+    signal: str,
+    query: str | None = None,
+    tags: list[str] | None = None,
+    weight: float = 1.0,
+) -> dict:
+    from datetime import datetime, timezone
+
+    if signal not in FEEDBACK_SIGNALS:
+        raise ValueError(f"signal must be one of: {', '.join(FEEDBACK_SIGNALS)}")
+    if not (0.0 <= weight <= 10.0):
+        raise ValueError("weight must be in [0, 10]")
+    feedback_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO memory_feedback "
+        "(id, item_id, signal, query, tags, weight, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            feedback_id, item_id, signal, query,
+            json.dumps(tags) if tags else None, float(weight), now,
+        ),
+    )
+    return {
+        "id": feedback_id,
+        "itemId": item_id,
+        "signal": signal,
+        "query": query,
+        "tags": tags or [],
+        "weight": float(weight),
+        "createdAt": now,
+    }
+
+
+def list_feedback(
+    conn: turso.Connection,
+    item_id: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    if item_id:
+        rows = conn.execute(
+            "SELECT id, item_id, signal, query, tags, weight, created_at "
+            "FROM memory_feedback WHERE item_id = ? ORDER BY created_at DESC LIMIT ?",
+            (item_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, item_id, signal, query, tags, weight, created_at "
+            "FROM memory_feedback ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": r[0], "itemId": r[1], "signal": r[2], "query": r[3],
+            "tags": json.loads(r[4]) if r[4] else [],
+            "weight": r[5], "createdAt": r[6],
         }
         for r in rows
     ]

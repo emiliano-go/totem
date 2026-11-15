@@ -19,6 +19,8 @@ import hashlib
 import math
 import re
 
+from .embeddings import get_static_encoder
+
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
 DEFAULT_DIM = 256
 
@@ -92,6 +94,20 @@ class DenseEncoder:
 
 def cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
+
+
+def semantic_vectors(texts: list[str], query: str) -> tuple[list[list[float]], list[float], str]:
+    """Document and query vectors from the configured encoder.
+
+    Returns ``(document_vectors, query_vector, backend)`` where backend is
+    ``model2vec`` when the optional static encoder is active, otherwise
+    ``hash`` for the dependency-free fallback.
+    """
+    static = get_static_encoder()
+    if static is not None:
+        return static.encode_many(texts), static.encode(query), "model2vec"
+    encoder = DenseEncoder().fit(texts + [query])
+    return encoder.vectors(texts), encoder.encode(query), "hash"
 
 
 def rrf_fuse(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
@@ -205,10 +221,107 @@ class Reranker:
         return cls(weights=data.get("weights"))
 
 
+MEMORY_FEATURES = (
+    "lexical", "dense", "fused", "tag", "path", "graph", "trust",
+    "importance", "verified", "recency", "critical", "stale",
+    "validity", "confidence",
+)
+
+
+class MemoryReranker:
+    """Linear reranker over candidate and trust features.
+
+    Untrained it is a transparent weighted heuristic; trained it uses
+    least-squares weights learned from feedback.
+    """
+
+    version = "memory-heuristic-v1"
+
+    def __init__(self, weights: list[float] | None = None) -> None:
+        self.weights = weights
+        if weights is not None:
+            self.version = "memory-linear-v1"
+
+    @staticmethod
+    def features(candidate, trust: float, now=None) -> list[float]:
+        item = candidate.item
+        updated = getattr(item, "updated_at", "") or ""
+        age_days = 30.0
+        if updated:
+            from datetime import datetime, timezone
+            try:
+                then = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                age_days = max(
+                    0.0,
+                    ((now or datetime.now(timezone.utc)) - then).total_seconds() / 86400.0,
+                )
+            except ValueError:
+                age_days = 30.0
+        status = getattr(getattr(item, "status", None), "value", "active")
+        critical = 1.0 if (
+            getattr(item, "type", None)
+            and item.type.value in ("invariant", "constraint", "contract")
+        ) else 0.0
+        return [
+            candidate.lexical,
+            candidate.dense,
+            candidate.fused,
+            candidate.tag,
+            candidate.path,
+            candidate.graph,
+            trust,
+            float(getattr(item, "importance", 0.5) or 0.5),
+            1.0 if getattr(item, "verified_at", None) else 0.0,
+            1.0 / (1.0 + age_days / 30.0),
+            critical,
+            1.0 if status == "potentially_stale" else 0.0,
+            candidate.validity,
+            float(getattr(item, "confidence", 0.6) or 0.6),
+        ]
+
+    def score(self, features: list[float]) -> float:
+        if self.weights is not None and len(self.weights) == len(features):
+            return sum(w * f for w, f in zip(self.weights, features))
+        f = features
+        return (
+            0.30 * f[2] + 0.15 * f[0] + 0.10 * f[1] + 0.15 * f[3]
+            + 0.10 * f[4] + 0.05 * f[5] + 0.10 * f[6] + 0.05 * f[7]
+            + 0.05 * f[8] + 0.03 * f[9] + 0.02 * f[10] - 0.15 * f[11]
+            + 0.03 * f[12]
+        )
+
+    def train(self, examples: list[tuple[list[float], float]]) -> "MemoryReranker":
+        if not examples:
+            return self
+        n = len(examples[0][0])
+        xtx = [[0.0] * n for _ in range(n)]
+        xty = [0.0] * n
+        for features, label in examples:
+            for i in range(n):
+                xty[i] += features[i] * label
+                for j in range(n):
+                    xtx[i][j] += features[i] * features[j]
+        self.weights = _solve(xtx, xty)
+        self.version = "memory-linear-v1"
+        return self
+
+    def to_dict(self) -> dict:
+        return {"weights": self.weights, "version": self.version}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MemoryReranker":
+        reranker = cls(weights=data.get("weights"))
+        reranker.version = str(data.get("version", reranker.version))
+        return reranker
+
+
 def experience_nearest(query: str, texts: list[str], ids: list[str]) -> str | None:
     """The single most similar prior item (SWE-Exp N=1 retrieval)."""
     if not query or not texts:
         return None
-    encoder = DenseEncoder().fit(texts + [query])
-    ranked = encoder.rank(query, texts)
-    return ids[ranked[0][0]] if ranked else None
+    vectors, query_vector, _backend = semantic_vectors(texts, query)
+    scores = [cosine(query_vector, vector) for vector in vectors]
+    best = max(range(len(scores)), key=lambda index: scores[index], default=None)
+    if best is None or scores[best] <= 0:
+        return None
+    return ids[best]

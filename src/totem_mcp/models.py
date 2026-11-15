@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Single source of truth for the on-disk schema. ``db`` imports this constant;
 # keeping a second copy here silently diverged (8 vs 9) and made every model
 # instance claim a schema it was not stored under.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Hard resource limits: an agent must not be able to persist an unbounded blob.
 LIMITS = {
@@ -216,10 +216,26 @@ class MemoryItem(BaseModel):
     )
     verified_at: str | None = Field(default=None, alias="verifiedAt")
     verified_commit: str | None = Field(default=None, alias="verifiedCommit")
+    valid_from: str | None = Field(default=None, alias="validFrom")
+    valid_to: str | None = Field(default=None, alias="validTo")
     schema_version: int = Field(default=SCHEMA_VERSION, alias="schemaVersion")
     metadata: dict[str, Any] | None = None
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _validate_validity_window(self) -> "MemoryItem":
+        if self.valid_from and self.valid_to:
+            try:
+                start = datetime.fromisoformat(self.valid_from.replace("Z", "+00:00"))
+                end = datetime.fromisoformat(self.valid_to.replace("Z", "+00:00"))
+            except ValueError as exc:
+                msg = f"valid_from/valid_to must be ISO timestamps: {exc}"
+                raise ValueError(msg) from exc
+            if end <= start:
+                msg = "valid_to must be later than valid_from"
+                raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _validate_type_specific_metadata(self) -> MemoryItem:

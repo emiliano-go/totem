@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import math
 import os
+from datetime import datetime
 
 import turso
 
@@ -14,15 +16,15 @@ from .db import (
     get_open_conflicts,
     get_relations_for_items,
     init_db,
-    list_items,
     connect,
     get_user_db_path,
-    search_fts,
 )
 from .hashing import check_staleness, verification_fresh
+from .learning import load_reranker
 from .paths import project_root
 from .models import Conflict, MemoryStatus, MemoryType, scope_kind
-from .ranking import DenseEncoder, experience_nearest, mmr, rrf_fuse
+from .ranking import MemoryReranker
+from .retrieval import build_candidates
 from pathlib import Path
 
 # Statuses to skip in context output
@@ -41,6 +43,17 @@ def _semantic_enabled() -> bool:
     return os.environ.get("TOTEM_SEMANTIC", "1").strip().lower() not in (
         "0", "off", "false", "no",
     )
+
+
+def _parse_as_of(value) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _item_text(item) -> str:
@@ -97,6 +110,7 @@ def _score_item(
     paths: list[str] | None = None,
     semantic_score: float = 0.0,
     trust: float | None = None,
+    stale_cache: dict | None = None,
 ) -> float:
     """Score = 0.30*tagMatch + 0.20*taskSimilarity + 0.25*importance
     + 0.15*confidence + 0.10*recency. Invariants/constraints/ambiguities: 1.25x.
@@ -123,12 +137,16 @@ def _score_item(
     if item.type in _BOOSTED_TYPES:
         score *= 1.25
     score *= _scope_boost(item, paths, task_words)
-    if getattr(item, "verified_at", None) and verification_fresh(item):
+    if getattr(item, "verified_at", None) and verification_fresh(
+        item, cache=stale_cache
+    ):
         score *= 1.10
     if item.status == MemoryStatus.POTENTIALLY_STALE:
         score *= 0.5
     if semantic_score:
-        score *= 1.0 + 0.25 * max(0.0, min(1.0, semantic_score))
+        # Fusion is a boost, never enough to override the deterministic scope
+        # and type precedence that follows.
+        score *= 1.0 + 0.12 * max(0.0, min(1.0, semantic_score))
     if trust is not None:
         # Calibrated/rule trust shifts ranking without overriding the hard
         # critical-type boost.
@@ -239,6 +257,8 @@ def engineering_context(
     paths: list[str] | None = None,
     semantic_candidates=None,
     max_item_chars: int | None = None,
+    as_of: str | None = None,
+    include_expired: bool = False,
 ) -> dict:
     """Assemble engineering context.
 
@@ -249,109 +269,100 @@ def engineering_context(
     """
     if token_budget and token_budget > MAX_TOKEN_BUDGET:
         token_budget = MAX_TOKEN_BUDGET
-    task_words = set(current_task.lower().split()) if current_task else None
-    project_items = list_items(conn, tags=tags, limit=200)
+    task_text = current_task or task or ""
+    task_words = set(task_text.lower().split()) if task_text else None
+    query = (current_task or task or "").strip()
+    moment = _parse_as_of(as_of)
 
-    user_items: list = []
+    seen_ids: set[str] = set()
+    all_items: list = []
+    candidate_by_id: dict = {}
+    embedding_backend = "off"
+    candidate_meta: dict = {}
+
+    project_candidates, project_meta = build_candidates(
+        conn, query, tags, paths,
+        include_stale=True, include_expired=True, as_of=moment,
+        semantic=_semantic_enabled(),
+    )
+    embedding_backend = project_meta.get("backend", "off")
+    candidate_meta = project_meta
+    for candidate in project_candidates:
+        if candidate.item.id not in seen_ids:
+            seen_ids.add(candidate.item.id)
+            all_items.append(candidate.item)
+            candidate_by_id[candidate.item.id] = candidate
+
+    db_user_ids: set[str] = set()
     user_db_path = get_user_db_path()
     if user_db_path.exists():
         user_conn = None
         try:
             user_conn = connect(user_db_path)
             init_db(user_conn)  # idempotent; migrates old-schema user DBs
-            user_items = list_items(user_conn, tags=tags, limit=200)
+            user_candidates, _user_meta = build_candidates(
+                user_conn, query, tags, paths,
+                include_stale=True, include_expired=True, as_of=moment,
+                semantic=_semantic_enabled(),
+            )
+            for candidate in user_candidates:
+                if candidate.item.id in seen_ids:
+                    continue
+                seen_ids.add(candidate.item.id)
+                all_items.append(candidate.item)
+                candidate_by_id[candidate.item.id] = candidate
+                db_user_ids.add(candidate.item.id)
         except Exception:
             # A broken user DB must not take down project results
-            user_items = []
+            pass
         finally:
             if user_conn is not None:
                 user_conn.close()
 
-    seen_ids: set[str] = set()
-    all_items: list = []
-    for item in project_items:
-        if item.id not in seen_ids:
-            seen_ids.add(item.id)
-            all_items.append(item)
-    db_user_ids: set[str] = set()
-    for item in user_items:
-        if item.id not in seen_ids:
-            seen_ids.add(item.id)
-            all_items.append(item)
-            db_user_ids.add(item.id)
-
-    # Path activation: direct evidence matches plus one bounded relation hop;
-    # semantic_candidates is an optional extra candidate source (embeddings).
-    extra_ids: set[str] = set()
-    relation_hop_ids: set[str] = set()
-    semantic_ids: set[str] = set()
-    path_matched: set[str] = set()
-    if paths:
-        path_matched = {
-            item.id
-            for item in all_items
-            if {ev.path for ev in item.evidence} & set(paths)
-        }
-        for rel in get_relations_for_items(conn, list(path_matched)):
-            relation_hop_ids.update({rel["from_id"], rel["to_id"]} - path_matched)
-        extra_ids.update(relation_hop_ids)
+    # Candidate reasons explain the retrieval leg that surfaced each item.
+    path_matched = {
+        item_id for item_id, candidate in candidate_by_id.items()
+        if "path" in candidate.reasons
+    }
+    relation_hop_ids = {
+        item_id for item_id, candidate in candidate_by_id.items()
+        if "relation" in candidate.reasons
+    }
+    semantic_ids = {
+        item_id for item_id, candidate in candidate_by_id.items()
+        if candidate.lexical > 0 or candidate.dense > 0
+    }
+    extra_ids = path_matched | relation_hop_ids | semantic_ids
     if semantic_candidates is not None:
         try:
-            semantic_ids = set(semantic_candidates(task or "") or [])
+            external_ids = set(semantic_candidates(task or "") or [])
         except Exception:
-            semantic_ids = set()
-        extra_ids.update(semantic_ids)
-    if extra_ids:
+            external_ids = set()
         known = {item.id for item in all_items}
-        for item_id in extra_ids:
+        for item_id in external_ids:
             if item_id in known:
                 continue
             item = get_item(conn, item_id)
             if item is not None:
                 all_items.append(item)
-                known.add(item.id)
+                known.add(item_id)
+        extra_ids.update(external_ids)
 
-    # Retrieval rank ensemble: lexical FTS (when the query has terms) fused by
-    # reciprocal rank with the dependency-free dense encoder. This is the
-    # default semantic candidate source; pass ``semantic_candidates`` to
-    # override it (e.g. with an external embedding backend).
-    query = (current_task or task or " ".join(tags) or "").strip()
-    semantic_scores: dict[str, float] = {}
     closest_id: str | None = None
-    if _semantic_enabled() and query and all_items:
-        texts = [_item_text(item) for item in all_items]
-        encoder = DenseEncoder().fit(texts + [query])
-        ranked = encoder.rank(query, texts)
-        # Diversify the dense leg so RRF does not get five near-duplicate
-        # memories from one file. The deterministic score still owns the final
-        # ordering, so MMR can never override a scope/type precedence boost.
-        order = mmr(
-            encoder.encode(query), encoder.vectors(texts),
-            [index for index, _ in ranked], k=len(ranked), lam=0.7,
-        )
-        dense_ids = [all_items[index].id for index in order]
-        lexical_ids: list[str] = []
-        try:
-            known = {item.id for item in all_items}
-            lexical_ids = [
-                item.id for item in search_fts(
-                    conn, query, include_stale=True, limit=100
-                ) if item.id in known
-            ]
-        except Exception:
-            lexical_ids = []
-        semantic_scores = rrf_fuse([lexical_ids, dense_ids])
-        # N=1 prior-experience recall: the single most similar memory, which
-        # is the task analogue of SWE-Exp retrieval.
-        closest_id = experience_nearest(
-            query, texts, [item.id for item in all_items]
-        )
+    if query and candidate_by_id:
+        best = max(candidate_by_id.values(), key=lambda candidate: candidate.dense)
+        if best.dense > 0:
+            closest_id = best.item.id
 
     trust_calibrator = load_calibrator(conn)
     root = project_root(conn)
+    user_items = [item for item in all_items if item.id in db_user_ids]
+    stale_cache: dict = {}
     trust_scores = {
-        item.id: rule_trust(item, root=root) for item in all_items
+        item.id: rule_trust(item, root=root, stale_cache=stale_cache)
+        for item in all_items
     }
+    reranker = load_reranker(conn)
 
     scored = []
     stale_items: list = []
@@ -369,14 +380,68 @@ def engineering_context(
             stale_items.append(item)
             if not include_stale:
                 continue
+        candidate = candidate_by_id.get(item.id)
+        if candidate is not None and candidate.validity <= 0.0 and not include_expired:
+            continue
         score = _score_item(
             item, tags, task_words, paths,
-            semantic_score=semantic_scores.get(item.id, 0.0),
+            semantic_score=(candidate.fused if candidate is not None else 0.0),
             trust=trust_scores.get(item.id),
+            stale_cache=stale_cache,
         )
+        if candidate is not None and candidate.validity <= 0.0:
+            score *= 0.5
+        if reranker is not None and reranker.weights is not None and candidate is not None:
+            blended = 1.0 / (
+                1.0 + math.exp(-reranker.score(
+                    MemoryReranker.features(
+                        candidate, trust_scores.get(item.id, 0.3)
+                    )
+                ))
+            )
+            score = 0.8 * score + 0.2 * blended
         scored.append((score, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Abstain rather than present noise. Critical classes and path matches keep
+    # a low-scoring result because they are relevant even without lexical or
+    # dense agreement.
+    threshold = float(os.environ.get("TOTEM_ABSTAIN_SCORE", "0.12"))
+    top_score = scored[0][0] if scored else 0.0
+    critical_hit = any(
+        score >= 0.15 and item.type in {
+            MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.CONTRACT,
+        }
+        for score, item in scored[:5]
+    )
+    stale_hit = bool(stale_items)
+    if (not scored and not stale_items) or (
+        top_score < threshold and not critical_hit and not path_matched and not stale_hit
+    ):
+        return {
+            "context": "",
+            "selectedIds": [],
+            "omittedIds": [],
+            "staleIds": [],
+            "conflicts": [],
+            "relations": {},
+            "warnings": [],
+            "budget": token_budget,
+            "estimatedTokens": 0,
+            "omitted": {},
+            "why": {},
+            "trustScores": {},
+            "closestId": closest_id,
+            "semanticEnabled": _semantic_enabled(),
+            "embeddingBackend": embedding_backend,
+            "calibration": (
+                "temporal-split" if trust_calibrator is not None else "rule"
+            ),
+            "abstained": True,
+            "abstainReason": "no memory scored above the context threshold",
+            "retrieval": candidate_meta,
+        }
 
     # Collect blocking ambiguities (type=ambiguity with impact high/critical)
     # Always shown, never budget-truncated
@@ -501,7 +566,10 @@ def engineering_context(
     # Relevance: keep a conflict only when it touches a memory we actually
     # considered, or one of the critical classes (invariants/constraints/
     # contracts) that are globally relevant. Everything else is context noise.
-    relevant_ids = set(by_id) | {i.id for i in stale_items} | path_matched | extra_ids
+    relevant_ids = {
+        item_id for item_id, candidate in candidate_by_id.items()
+        if candidate.fused > 0 or candidate.path > 0 or candidate.tag > 0
+    } | {i.id for i in stale_items} | path_matched | extra_ids
     critical_types = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.CONTRACT}
 
     def _conflict_relevant(conflict) -> bool:
@@ -611,7 +679,7 @@ def engineering_context(
             reasons.append("path")
         if item_id in relation_hop_ids:
             reasons.append("relation-hop")
-        if item_id in semantic_ids or semantic_scores.get(item_id, 0.0) > 0:
+        if item_id in semantic_ids:
             reasons.append("semantic")
         if item and tag_set and (set(item.tags) & tag_set):
             reasons.append("tag")
@@ -642,6 +710,9 @@ def engineering_context(
         "trustScores": selected_trust,
         "closestId": closest_id,
         "semanticEnabled": _semantic_enabled(),
+        "embeddingBackend": embedding_backend,
+        "abstained": False,
+        "retrieval": candidate_meta,
         "calibration": (
             "temporal-split" if trust_calibrator is not None else "rule"
         ),

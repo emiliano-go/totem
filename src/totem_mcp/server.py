@@ -11,13 +11,17 @@ from .calibration import validate_and_promote
 from .context import engineering_context
 from .db import db_connection
 from .db import get_all_items, list_task_items, list_command_items
+from .embeddings import status as embedding_status
 from .errors import error_response, not_found
 from .eval_bench import auto_cases, evaluate, gate, load_cases
 from .hardening import harden_registry, tool_manifest
 from .tools import (
     memory_audit,
     memory_check_record,
+    memory_consolidate,
     memory_create,
+    memory_feedback,
+    memory_feedback_list,
     memory_history,
     memory_relate,
     memory_relations,
@@ -30,6 +34,7 @@ from .tools import (
     memory_recent,
     memory_revalidate,
     memory_search,
+    memory_train_models,
     memory_update,
     memory_verify,
     register_file_read,
@@ -70,6 +75,8 @@ def memory_create_tool(
     asserted_by: str | None = None,
     applicability: str | None = None,
     scope: str | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
     supersedes_id: str | None = None,
     project: str | None = None,
     actor: str | None = None,
@@ -93,6 +100,8 @@ def memory_create_tool(
         asserted_by: Who established the claim: user, test, source, git, doc, runtime, agent (default agent)
         applicability: current, legacy, deprecated, planned (orthogonal to status)
         scope: user, project, path, task — or JSON {"kind": "...", "value": "..."}
+        valid_from: ISO timestamp when the claim starts being true
+        valid_to: ISO timestamp when the claim stops being true
         supersedes_id: ID of a memory this one replaces (marks it superseded)
         project: Optional project root path. Auto-detected from git root if omitted.
     """
@@ -113,6 +122,8 @@ def memory_create_tool(
                 asserted_by=asserted_by,
                 applicability=applicability,
                 scope=scope,
+                valid_from=valid_from,
+                valid_to=valid_to,
                 supersedes_id=supersedes_id,
                 actor=actor,
                 session=session,
@@ -208,6 +219,8 @@ def memory_update_tool(
     importance: float | None = None,
     evidence: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
     project: str | None = None,
     actor: str | None = None,
     session: str | None = None,
@@ -228,6 +241,8 @@ def memory_update_tool(
         importance: New importance (0-1)
         evidence: New evidence list
         metadata: New metadata
+        valid_from: New validity start (empty string clears it)
+        valid_to: New validity end (empty string clears it)
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -245,6 +260,8 @@ def memory_update_tool(
                 importance=importance,
                 evidence=evidence,
                 metadata=metadata,
+                valid_from=valid_from,
+                valid_to=valid_to,
                 actor=actor,
                 session=session,
                 request_id=request_id,
@@ -384,6 +401,12 @@ def memory_audit_tool(project: str | None = None) -> str:
 def totem_manifest_tool() -> str:
     """Return the stable digest of the registered tool surface."""
     return json.dumps(tool_manifest(mcp._tool_manager._tools), indent=2)
+
+
+@mcp.tool()
+def totem_embedding_status_tool() -> str:
+    """Report the configured retrieval encoder and its fallback state."""
+    return json.dumps(embedding_status(), indent=2)
 
 
 @mcp.tool()
@@ -604,6 +627,8 @@ def memory_search_tool(
     tags: list[str] | None = None,
     include_stale: bool = False,
     limit: int = 20,
+    as_of: str | None = None,
+    include_expired: bool = False,
     project: str | None = None,
 ) -> str:
     """Hybrid tag + full-text search.
@@ -614,6 +639,8 @@ def memory_search_tool(
         tags: Filter by tags
         include_stale: Whether to include potentially stale items
         limit: Maximum results (default 20)
+        as_of: Evaluate temporal validity at this ISO timestamp
+        include_expired: Include memories outside their validity window
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -625,8 +652,95 @@ def memory_search_tool(
                 tags=tags,
                 include_stale=include_stale,
                 limit=limit,
+                as_of=as_of,
+                include_expired=include_expired,
             )
             return json.dumps(result, indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_feedback_tool(
+    id: str,
+    signal: str,
+    query: str | None = None,
+    tags: list[str] | None = None,
+    weight: float = 1.0,
+    project: str | None = None,
+) -> str:
+    """Record whether a memory was useful, wrong, irrelevant, or stale.
+
+    Args:
+        id: Memory item id
+        signal: useful, wrong, irrelevant, verified, or stale
+        query: Task or query the item was considered for
+        tags: Tags supplied with that query
+        weight: Relative weight in [0, 10] (default 1)
+        project: Optional project root path
+    """
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_feedback(
+                    conn, id, signal, query=query, tags=tags, weight=weight
+                ),
+                indent=2,
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_feedback_list_tool(
+    id: str | None = None,
+    limit: int = 200,
+    project: str | None = None,
+) -> str:
+    """List recorded retrieval feedback."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_feedback_list(conn, id=id, limit=limit), indent=2
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_train_models_tool(
+    min_examples: int = 24,
+    project: str | None = None,
+) -> str:
+    """Fit the reranker and calibrator from recorded feedback."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_train_models(conn, min_examples=min_examples), indent=2
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_consolidate_tool(
+    apply: bool = False,
+    threshold: float = 0.92,
+    project: str | None = None,
+) -> str:
+    """Cluster near-duplicate memories and optionally supersede duplicates.
+
+    Args:
+        apply: Apply the consolidation (default is a dry run)
+        threshold: Cosine similarity needed to join a cluster (default 0.92)
+        project: Optional project root path
+    """
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_consolidate(conn, apply=apply, threshold=threshold),
+                indent=2,
+            )
         except Exception as e:
             return error_response(e)
 
@@ -640,6 +754,9 @@ def engineering_context_tool(
     include_stale: bool = False,
     current_task: str | None = None,
     paths: list[str] | None = None,
+    max_item_chars: int | None = None,
+    as_of: str | None = None,
+    include_expired: bool = False,
     project: str | None = None,
 ) -> str:
     """Assemble engineering context with output ordering.
@@ -654,6 +771,9 @@ def engineering_context_tool(
         types: Filter by memory types
         include_stale: Whether to include potentially stale items
         current_task: Description of what you're working on right now. Boosts scoring for memories relevant to this task.
+        max_item_chars: Cap a single item so it cannot dominate the budget
+        as_of: Evaluate temporal validity at this ISO timestamp
+        include_expired: Include memories outside their validity window
         paths: Filter items whose evidence matches these file paths
         project: Optional project root path. Auto-detected from git root if omitted.
     """
@@ -668,6 +788,9 @@ def engineering_context_tool(
                 include_stale=include_stale,
                 current_task=current_task,
                 paths=paths,
+                max_item_chars=max_item_chars,
+                as_of=as_of,
+                include_expired=include_expired,
             )
             return json.dumps(result, indent=2)
         except Exception as e:

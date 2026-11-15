@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+## 0.9.0 (2026-11-14)
+
+### Retrieval v2
+
+- **Corpus-wide candidates.** Context and search no longer start from
+  tag-filtered rows. Candidates come from lexical FTS (full query and per
+  term), dense similarity over persisted embeddings, evidence path and symbol
+  matches, tag matches as a boost, and a two-hop relation expansion. Tags are a
+  signal, not a gate.
+- **Persisted embeddings.** Static Model2Vec vectors are stored in
+  `memory_embeddings` and refreshed by content hash; the hash fallback remains
+  in-memory.
+- **Hybrid search.** `memory_search` returns fused lexical and dense scores
+  plus the reasons each result entered.
+- **Feedback loop.** `memory_feedback` records useful/wrong/irrelevant/
+  verified/stale signals. `memory_train_models` (or `totem models train`) fits
+  the linear reranker and conformal calibrator when both classes are present;
+  the trained weights are applied by context and stored in `meta`.
+- **Temporal validity.** `valid_from` / `valid_to` on every memory, `as_of` and
+  `include_expired` on context and search; expired claims are excluded or
+  demoted.
+- **Abstention.** Context returns `abstained` with an empty body when no memory
+  clears the score threshold, instead of presenting noise. Critical classes,
+  path matches, and stale knowledge still surface.
+- **Consolidation.** `memory_consolidate` clusters near-duplicates, supports a
+  dry run and apply, marks duplicates superseded with a relation, and flags
+  opposite-polarity clusters as contradiction candidates.
+- **Evaluation.** Cases can be `single`, `multi`, `temporal`, `update`, or
+  `abstention`; reports include nDCG and abstention accuracy alongside recall,
+  MRR, and p95 latency.
+- **Portability.** Export format v2 includes recorded checks; import restores
+  them when the item exists.
+
+### Retrieval
+
+- **Optional static embeddings.** Install `totem-mcp[embeddings]` and set
+  `TOTEM_EMBEDDING_BACKEND=auto` (default) or `model2vec` to use
+  `minishlab/potion-retrieval-32M` for the dense retrieval leg. The model is a
+  32M Model2Vec static encoder: CPU-only, numpy-based, no torch. When the
+  package or model is unavailable the dependency-free hash encoder is used and
+  retrieval still works.
+- `TOTEM_EMBEDDING_MODEL` selects a Hugging Face id or local directory;
+  `TOTEM_EMBEDDING_LOCAL` points at a pre-pulled model for offline installs.
+- `totem models status` and `totem_embedding_status_tool` report the
+  configured encoder, dimension, and fallback reason; `totem models pull`
+  downloads and warms the model. Context results include `embeddingBackend`.
+
 ## 0.8.0 (2026-11-14)
 
 Evidence and trust release: tamper-evident history, observed checks,

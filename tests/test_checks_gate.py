@@ -66,3 +66,23 @@ def test_unknown_check_is_rejected(fresh_db):
     item_id = _item(fresh_db)
     with pytest.raises(ValueError, match="check not found"):
         memory_verify(fresh_db, item_id, check_id="nope")
+
+
+def test_export_and_import_preserve_checks(fresh_db, tmp_path):
+    from totem_mcp.db import connect, init_db
+    from totem_mcp.tools import memory_export, memory_import
+
+    item_id = _item(fresh_db)
+    check = memory_check_record(fresh_db, item_id, "pytest", exit_code=0)
+    export = memory_export(fresh_db)
+    assert export["format_version"] == 2
+    assert export["checks"][0]["id"] == check["id"]
+
+    other = connect(db_path=tmp_path / "other-v2.db")
+    init_db(other)
+    report = memory_import(other, export)
+    assert report["checks_imported"] == 1
+    row = other.execute(
+        "SELECT name, exit_code FROM memory_checks WHERE id = ?", (check["id"],)
+    ).fetchone()
+    assert row == ("pytest", 0)

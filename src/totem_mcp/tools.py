@@ -38,14 +38,16 @@ from .db import (
     insert_history,
     insert_item,
     record_check,
+    record_feedback,
+    list_feedback,
     list_items,
     resolve_conflict as db_resolve_conflict,
-    search_fts,
     soft_delete,
     update_item_row,
     verify_history,
 )
 from .hashing import check_staleness, hash_content, hash_symbol, verification_fresh
+from .ranking import cosine
 from .paths import EvidencePathError, contained_path, project_root
 from .models import (
     LIMITS,
@@ -167,6 +169,8 @@ def memory_create(
     asserted_by: str | None = None,
     applicability: str | None = None,
     scope: str | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
     supersedes_id: str | None = None,
     actor: str | None = None,
     session: str | None = None,
@@ -251,6 +255,8 @@ def memory_create(
         asserted_by=asserted_by,
         applicability=applicability,
         scope=scope,
+        valid_from=valid_from or None,
+        valid_to=valid_to or None,
     )
 
     superseded = None
@@ -401,6 +407,8 @@ def memory_update(
     importance: float | None = None,
     evidence: list[dict] | None = None,
     metadata: dict | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
     actor: str | None = None,
     session: str | None = None,
     request_id: str | None = None,
@@ -471,6 +479,12 @@ def memory_update(
         if item.type == MemoryType.BUG and metadata.get("state") == "verified":
             fields["verified_at"] = fields["updated_at"]
             fields["verified_commit"] = get_head_commit()
+    if valid_from is not None:
+        changes.append(("valid_from", item.valid_from, valid_from or None))
+        fields["valid_from"] = valid_from or None
+    if valid_to is not None:
+        changes.append(("valid_to", item.valid_to, valid_to or None))
+        fields["valid_to"] = valid_to or None
 
     # Reconstruct the resulting item and validate it exactly like create/import
     # do, so update cannot produce a state create would reject.
@@ -872,7 +886,7 @@ def memory_gc(
     }
 
 
-EXPORT_FORMAT_VERSION = 1
+EXPORT_FORMAT_VERSION = 2
 
 
 def memory_export(conn: turso.Connection) -> dict:
@@ -885,6 +899,17 @@ def memory_export(conn: turso.Connection) -> dict:
     items = get_all_items(conn)
     conflicts = get_all_conflicts(conn)
     relations = get_all_relations(conn)
+    checks = [
+        {
+            "id": row[0], "itemId": row[1], "name": row[2], "command": row[3],
+            "cwd": row[4], "exitCode": row[5], "outputHash": row[6],
+            "evidenceHash": row[7], "commit": row[8], "ranAt": row[9],
+        }
+        for row in conn.execute(
+            "SELECT id, item_id, name, command, cwd, exit_code, output_hash, "
+            "evidence_hash, commit_sha, ran_at FROM memory_checks"
+        ).fetchall()
+    ]
     return {
         "format_version": EXPORT_FORMAT_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -892,6 +917,7 @@ def memory_export(conn: turso.Connection) -> dict:
         "items": [item.model_dump(by_alias=True) for item in items],
         "conflicts": [c.model_dump(by_alias=True) for c in conflicts],
         "relations": relations,
+        "checks": checks,
     }
 
 
@@ -925,6 +951,7 @@ def memory_import(
     items_raw = data.get("items", [])
     relations_raw = data.get("relations", []) if format_version >= 1 else []
     conflicts_raw = data.get("conflicts", [])
+    checks_raw = data.get("checks", []) if format_version >= 2 else []
     errors: list[dict] = []
 
     # Validation phase: parse everything before any mutation.
@@ -954,7 +981,20 @@ def memory_import(
         except Exception as e:
             errors.append({"section": "conflicts", "index": i, "error": str(e)})
 
-    def _report(imported, skipped, r_imp, r_skip, c_imp, c_skip, aborted=False):
+    valid_checks: list[dict] = []
+    for i, raw in enumerate(checks_raw):
+        if not isinstance(raw, dict) or not all(
+            raw.get(key) for key in ("id", "itemId", "name")
+        ):
+            errors.append(
+                {"section": "checks", "index": i,
+                 "error": "id, itemId, and name are required"}
+            )
+        else:
+            valid_checks.append(raw)
+
+    def _report(imported, skipped, r_imp, r_skip, c_imp, c_skip,
+                ch_imp=0, ch_skip=0, aborted=False):
         return {
             "mode": mode,
             "dry_run": dry_run,
@@ -965,6 +1005,8 @@ def memory_import(
             "relations_skipped": r_skip,
             "conflicts_imported": c_imp,
             "conflicts_skipped": c_skip,
+            "checks_imported": ch_imp,
+            "checks_skipped": ch_skip,
             "errors": errors,
         }
 
@@ -976,12 +1018,14 @@ def memory_import(
             len(valid_items), len(items_raw) - len(valid_items),
             len(valid_relations), len(relations_raw) - len(valid_relations),
             len(valid_conflicts), len(conflicts_raw) - len(valid_conflicts),
+            0, len(checks_raw),
         )
 
     if mode == "replace":
         conn.execute("DELETE FROM memory_relations")
         conn.execute("DELETE FROM conflicts")
         conn.execute("DELETE FROM memory_history")
+        conn.execute("DELETE FROM memory_checks")
         conn.execute("DELETE FROM memory_items")
 
     # Apply items
@@ -998,6 +1042,29 @@ def memory_import(
         items_imported += 1
 
     known = {item.id for item in get_all_items(conn)}
+    existing_checks = {
+        row[0] for row in conn.execute("SELECT id FROM memory_checks").fetchall()
+    }
+    checks_imported = 0
+    checks_skipped = len(checks_raw) - len(valid_checks)
+    for check in valid_checks:
+        if check["id"] in existing_checks or check["itemId"] not in known:
+            checks_skipped += 1
+            continue
+        conn.execute(
+            "INSERT INTO memory_checks "
+            "(id, item_id, name, command, cwd, exit_code, output_hash, "
+            "evidence_hash, commit_sha, ran_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                check["id"], check["itemId"], check["name"], check.get("command"),
+                check.get("cwd"), int(check.get("exitCode") or 0),
+                check.get("outputHash"), check.get("evidenceHash"),
+                check.get("commit"), check.get("ranAt") or _now(), _now(),
+            ),
+        )
+        existing_checks.add(check["id"])
+        checks_imported += 1
     existing_relations = {
         (r["from_id"], r["to_id"], r["kind"]) for r in get_all_relations(conn)
     }
@@ -1037,6 +1104,7 @@ def memory_import(
         items_imported, items_skipped,
         relations_imported, relations_skipped,
         conflicts_imported, conflicts_skipped,
+        checks_imported, checks_skipped,
     )
 
 
@@ -1047,11 +1115,41 @@ def memory_search(
     tags: list[str] | None = None,
     include_stale: bool = False,
     limit: int = 20,
+    as_of: str | None = None,
+    include_expired: bool = False,
 ) -> list[dict]:
-    """Hybrid tag + full-text search (§43 memory_search)."""
-    items = search_fts(conn, query, types=types, tags=tags, include_stale=include_stale, limit=limit)
+    """Hybrid lexical and dense search over the whole memory corpus."""
+    from .context import _parse_as_of
+    from .retrieval import build_candidates
+
+    candidates, _meta = build_candidates(
+        conn, query, tags, None,
+        limit=max(limit * 4, 50),
+        include_stale=include_stale,
+        include_expired=include_expired,
+        as_of=_parse_as_of(as_of),
+    )
+    tag_set = set(tags or [])
+    ranked = []
+    for candidate in candidates:
+        item = candidate.item
+        if types and item.type.value not in types:
+            continue
+        if tag_set and not (tag_set & set(item.tags)):
+            continue
+        score = (
+            0.50 * candidate.fused
+            + 0.20 * candidate.lexical
+            + 0.15 * candidate.dense
+            + 0.10 * candidate.tag
+            + 0.05 * candidate.path
+        )
+        ranked.append((score, candidate))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+
     results = []
-    for item in items:
+    for score, candidate in ranked[:limit]:
+        item = candidate.item
         warnings: list[str] = []
         for ev in item.evidence:
             if check_staleness(
@@ -1066,10 +1164,177 @@ def memory_search(
             ):
                 warnings.append(f"Evidence stale: {ev.path}:{ev.start_line}-{ev.end_line}")
         d = item.model_dump(by_alias=True)
+        d["score"] = round(score, 4)
+        d["reasons"] = list(candidate.reasons)
         if warnings:
             d["warnings"] = warnings
         results.append(d)
     return results
+
+
+_NEGATIONS = {"not", "never", "no", "cannot", "can't", "without", "deprecated"}
+
+
+def _polarity(text: str) -> int:
+    tokens = set(re.findall(r"[a-z']+", (text or "").lower()))
+    return -1 if tokens & _NEGATIONS else 1
+
+
+@atomic
+@idempotent
+def memory_feedback(
+    conn: turso.Connection,
+    id: str,
+    signal: str,
+    query: str | None = None,
+    tags: list[str] | None = None,
+    weight: float = 1.0,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict:
+    """Record whether a memory was useful, wrong, irrelevant, or stale."""
+    item = get_item(conn, id)
+    if item is None:
+        return {"error": f"Item {id} not found"}
+    record = record_feedback(
+        conn, id, signal, query=query, tags=tags, weight=weight
+    )
+    insert_history(
+        conn, id, "feedback", field="signal", new_value=signal,
+        reason=f"feedback weight {weight}", source="memory_feedback",
+        actor=actor, session=session, request_id=request_id,
+    )
+    return record
+
+
+def memory_feedback_list(
+    conn: turso.Connection,
+    id: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    return list_feedback(conn, item_id=id, limit=limit)
+
+
+def memory_train_models(
+    conn: turso.Connection,
+    min_examples: int = 24,
+) -> dict:
+    """Fit the reranker and calibrator from recorded feedback."""
+    from .learning import train_models
+
+    return train_models(conn, min_examples=min_examples)
+
+
+@atomic
+def memory_consolidate(
+    conn: turso.Connection,
+    apply: bool = False,
+    threshold: float = 0.92,
+    actor: str | None = None,
+    session: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Cluster near-duplicate memories and optionally supersede duplicates."""
+    from .retrieval import get_encoder_bundle
+
+    if not (0.5 <= threshold <= 1.0):
+        raise ValueError("threshold must be in [0.5, 1.0]")
+    items = [
+        item for item in get_all_items(conn)
+        if item.status.value in ("active", "potentially_stale")
+    ]
+    if len(items) < 2:
+        return {"dryRun": not apply, "clusters": [], "count": 0}
+
+    bundle = get_encoder_bundle(conn, items)
+    vectors = bundle.vectors
+    clusters: list[dict] = []
+    for item in items:
+        vector = vectors.get(item.id)
+        if not vector:
+            continue
+        best_index = None
+        best_similarity = 0.0
+        for index, cluster in enumerate(clusters):
+            similarity = max(
+                (
+                    cosine(vector, vectors.get(member_id, []))
+                    for member_id in cluster["memberIds"]
+                ),
+                default=0.0,
+            )
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_index = index
+        if best_index is not None and best_similarity >= threshold:
+            clusters[best_index]["memberIds"].append(item.id)
+            clusters[best_index]["similarity"][item.id] = round(best_similarity, 4)
+        else:
+            clusters.append({
+                "memberIds": [item.id],
+                "similarity": {item.id: 1.0},
+            })
+
+    by_id = {item.id: item for item in items}
+    report = []
+    for cluster in clusters:
+        members = [
+            by_id[item_id] for item_id in cluster["memberIds"] if item_id in by_id
+        ]
+        if len(members) < 2:
+            continue
+        canonical = max(
+            members,
+            key=lambda item: (
+                1 if item.verified_at else 0,
+                item.importance,
+                item.confidence,
+                item.updated_at,
+            ),
+        )
+        duplicates = [item for item in members if item.id != canonical.id]
+        contradiction = any(
+            _polarity(canonical.statement) != _polarity(item.statement)
+            for item in duplicates
+        )
+        if apply:
+            for duplicate in duplicates:
+                update_item_row(
+                    conn, duplicate.id,
+                    {
+                        "status": MemoryStatus.SUPERSEDED.value,
+                        "updated_at": _now(),
+                    },
+                )
+                try:
+                    insert_relation(conn, duplicate.id, canonical.id, "refines")
+                except turso.IntegrityError:
+                    pass
+                insert_history(
+                    conn, duplicate.id, "consolidated",
+                    reason=f"near-duplicate of {canonical.id}",
+                    source="memory_consolidate", actor=actor,
+                    session=session, request_id=request_id,
+                )
+        report.append({
+            "canonical": canonical.id,
+            "duplicates": [item.id for item in duplicates],
+            "maxSimilarity": max(
+                (cluster["similarity"].get(item.id, 0.0) for item in duplicates),
+                default=1.0,
+            ),
+            "contradictionCandidate": contradiction,
+        })
+
+    return {
+        "dryRun": not apply,
+        "threshold": threshold,
+        "clusters": report,
+        "count": len(report),
+        "backend": bundle.backend,
+    }
 
 
 def totem_init(project: str | None = None) -> dict:
