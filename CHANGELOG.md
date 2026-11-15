@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.10.0 (2026-11-15)
+
+### Memory operating loop
+
+- **Memory classes.** Every item is operational, episodic, procedural, core, or
+  semantic. File state is operational; session summaries are episodic;
+  workflows are procedural; profile blocks are core; the rest is semantic.
+- **Entity graph.** Files, symbols, components, rules, pull requests, and
+  packages become entities linked to the memories that mention them.
+- **Bi-temporal relations.** Edges carry recorded time, a validity window, and
+  the source episode, so a relation can be current or historical.
+- **Hierarchical rollups.** File TLDRs roll up into module summaries and a
+  project map. `totem rollup --apply` writes the durable layer.
+- **Heat and decay.** Recency, importance, and access produce a heat score;
+  `totem decay` archives old low-importance operational and episodic memories.
+- **Workflow memory.** `memory_workflow` stores reusable procedures with
+  preconditions, verification, and failure modes. `memory_induce_workflow`
+  drafts one from a session summary.
+- **Always-on profile.** `memory_profile` writes core user blocks to the user
+  database.
+- **Maintenance cycle.** `memory_maintenance` and `totem maintain` run entity
+  backfill, revalidation, rollup, decay, and consolidation together.
+- **Markdown memory.** `totem export-markdown` and `totem import-markdown` move
+  notes, evidence, and wikilink relations without losing provenance.
+- **Benchmark suite.** Five LongMemEval-style tests cover extraction,
+  multi-session reasoning, temporal reasoning, knowledge updates, and
+  abstention.
+- **Schema v12.** Adds access counters, relation validity columns, and entity
+  tables; existing databases migrate in place.
+
 ## 0.9.3 (2026-11-15)
 
 ### Read-side file memory

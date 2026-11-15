@@ -55,7 +55,7 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **50 MCP tools** (core, typed wrappers, and memory maintenance)
+- **61 MCP tools** (core, typed wrappers, and memory maintenance)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
@@ -74,6 +74,12 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 - **Feedback loop**: record useful/wrong signals and train the reranker and calibrator
 - **Abstention and consolidation**: no noise when nothing is relevant; near-duplicate clustering
 - **Bounded MCP tools**: output caps, rate limits, deadlines, and a tool-manifest digest
+- **Memory classes**: operational, episodic, procedural, core, and semantic records
+- **Entity graph**: files, symbols, components, rules, pull requests, and packages linked to memories
+- **Bi-temporal edges**: recorded time plus validity windows on every relation
+- **Hierarchical rollups**: file TLDRs feed module and project summaries
+- **Heat and decay**: recency, importance, and access rank memories; stale operational state is archivable
+- **Workflow memory**: reusable procedures with preconditions, verification, and failure modes
 
 ### Retrieval v2
 
@@ -318,7 +324,7 @@ totem quality
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (50)
+## MCP tools (61)
 
 | Tool | Description |
 |------|-------------|
@@ -338,6 +344,17 @@ totem quality
 | `memory_import_tool` | Import memories from JSON (skips duplicates) |
 | `memory_gc_tool` | Purge terminal-state memories past retention (dry-run default) |
 | `memory_quality_tool` | Report signal ratio, provenance, stale evidence, conflicts, and digest composition |
+| `memory_workflow_tool` | Create or update a reusable procedure |
+| `memory_profile_tool` | Write one always-on user profile block |
+| `memory_graph_tool` | Show entities and the memories linked to them |
+| `memory_rollup_tool` | Summarize file state into module and project memories |
+| `memory_heat_tool` | Rank memories by recency, importance, and access |
+| `memory_touch_tool` | Record that memories were read, feeding heat |
+| `memory_decay_tool` | Archive low-heat operational and episodic memories |
+| `memory_induce_workflow_tool` | Turn a session summary into a workflow draft |
+| `memory_maintenance_tool` | Run revalidation, rollup, decay, and consolidation |
+| `memory_export_markdown_tool` | Export memories as Markdown notes |
+| `memory_import_markdown_tool` | Import Markdown notes with wikilink relations |
 | `memory_verify_tool` | Record that a memory was verified (sets verified_at/commit, confidence 1.0) |
 | `memory_revalidate_tool` | Void verifications whose evidence changed |
 | `register_file_read_tool` | Store facts learned from reading a file (auto-hashes) |
@@ -345,7 +362,7 @@ totem quality
 | `*_create` (14) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
-## CLI commands (17)
+## CLI commands (39)
 
 | Command | Description |
 |---------|-------------|

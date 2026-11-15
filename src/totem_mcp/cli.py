@@ -7,7 +7,8 @@ import json
 import click
 
 from .context import engineering_context
-from .db import db_connection
+from .db import connect, db_connection, get_user_db_path, init_db
+from .markdown import export_markdown, import_markdown
 from .tools import (
     memory_audit,
     memory_quality,
@@ -20,15 +21,24 @@ from .tools import (
     memory_gc,
     memory_get,
     memory_history,
+    memory_heat,
     memory_import,
+    memory_induce_workflow,
     memory_list,
+    memory_maintenance,
+    memory_profile,
     memory_recent,
     memory_revalidate,
+    memory_rollup,
     memory_search,
     memory_feedback,
+    memory_decay,
+    memory_graph,
     memory_train_models,
+    memory_touch,
     memory_update,
     memory_verify,
+    memory_workflow,
     resolve_conflict,
     totem_init,
 )
@@ -255,6 +265,135 @@ def quality(ctx: click.Context) -> None:
     """Report memory signal, provenance, stale evidence, and conflicts."""
     with db_connection(project=ctx.obj.get("project")) as conn:
         click.echo(json.dumps(memory_quality(conn), indent=2))
+
+
+@cli.command("workflow")
+@click.argument("name")
+@click.option("--step", "steps", multiple=True, required=True, help="Ordered workflow step.")
+@click.option("--precondition", "preconditions", multiple=True)
+@click.option("--verification", "verification", multiple=True)
+@click.option("--failure", "failure_modes", multiple=True)
+@click.option("--summary", default=None)
+@click.option("--tag", "tags", multiple=True)
+@click.pass_context
+def workflow_cmd(
+    ctx: click.Context, name: str, steps: tuple[str, ...],
+    preconditions: tuple[str, ...], verification: tuple[str, ...],
+    failure_modes: tuple[str, ...], summary: str | None, tags: tuple[str, ...],
+) -> None:
+    """Create or update a reusable procedure."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_workflow(
+            conn, name, list(steps), list(preconditions), list(verification),
+            list(failure_modes), list(tags), summary,
+        ), indent=2))
+
+
+@cli.command("profile")
+@click.argument("section")
+@click.argument("content")
+@click.option("--source", default="user")
+def profile_cmd(section: str, content: str, source: str) -> None:
+    """Write one always-on user profile block."""
+    conn = connect(db_path=get_user_db_path())
+    try:
+        init_db(conn)
+        click.echo(json.dumps(memory_profile(conn, section, content, source), indent=2))
+    finally:
+        conn.close()
+
+
+@cli.command("graph")
+@click.argument("entity", required=False)
+@click.option("--limit", default=50, type=int)
+@click.pass_context
+def graph_cmd(ctx: click.Context, entity: str | None, limit: int) -> None:
+    """Show entities and the memories linked to them."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_graph(conn, entity, limit), indent=2))
+
+
+@cli.command("rollup")
+@click.option("--path", "path_prefix", default="")
+@click.option("--apply", "apply_", is_flag=True)
+@click.option("--min-files", default=2, type=int)
+@click.pass_context
+def rollup_cmd(ctx: click.Context, path_prefix: str, apply_: bool, min_files: int) -> None:
+    """Summarize file state into module and project memories."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            memory_rollup(conn, path_prefix, apply_, min_files), indent=2,
+        ))
+
+
+@cli.command("heat")
+@click.option("--limit", default=20, type=int)
+@click.pass_context
+def heat_cmd(ctx: click.Context, limit: int) -> None:
+    """Rank memories by recency, importance, and access."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_heat(conn, limit), indent=2))
+
+
+@cli.command("touch")
+@click.argument("ids", nargs=-1, required=True)
+@click.pass_context
+def touch_cmd(ctx: click.Context, ids: tuple[str, ...]) -> None:
+    """Record that memories were read, feeding the heat score."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_touch(conn, list(ids)), indent=2))
+
+
+@cli.command("decay")
+@click.option("--days", default=180, type=int)
+@click.option("--apply", "apply_", is_flag=True)
+@click.pass_context
+def decay_cmd(ctx: click.Context, days: int, apply_: bool) -> None:
+    """Archive low-heat operational and episodic memories."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_decay(conn, days, not apply_), indent=2))
+
+
+@cli.command("induce-workflow")
+@click.argument("session_id")
+@click.option("--apply", "apply_", is_flag=True)
+@click.option("--name", default=None)
+@click.pass_context
+def induce_workflow_cmd(
+    ctx: click.Context, session_id: str, apply_: bool, name: str | None,
+) -> None:
+    """Turn a session summary into a workflow draft."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            memory_induce_workflow(conn, session_id, apply_, name), indent=2,
+        ))
+
+
+@cli.command("maintain")
+@click.option("--apply", "apply_", is_flag=True)
+@click.pass_context
+def maintain_cmd(ctx: click.Context, apply_: bool) -> None:
+    """Run revalidation, rollup, decay, and consolidation."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_maintenance(conn, apply_), indent=2))
+
+
+@cli.command("export-markdown")
+@click.argument("directory", type=click.Path(file_okay=False))
+@click.pass_context
+def export_markdown_cmd(ctx: click.Context, directory: str) -> None:
+    """Export memories as Markdown notes with wikilinks."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(export_markdown(conn, directory), indent=2))
+
+
+@cli.command("import-markdown")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False))
+@click.pass_context
+def import_markdown_cmd(ctx: click.Context, directory: str) -> None:
+    """Import Markdown notes produced by export-markdown."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(import_markdown(conn, directory), indent=2))
 
 
 @cli.command("feedback")

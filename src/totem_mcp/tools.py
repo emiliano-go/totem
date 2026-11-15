@@ -25,10 +25,15 @@ from .db import (
     find_locator_item_by_path,
     upsert_locator,
     get_all_relations,
+    get_all_entities,
+    get_entities_for_item,
+    get_items_for_entity,
     get_history,
     get_relations_for_item,
     get_all_conflicts,
     insert_relation,
+    link_entity,
+    upsert_entity,
     get_all_items,
     get_check,
     get_item,
@@ -240,6 +245,8 @@ def memory_create(
             metadata = {}
         if "rationale" not in metadata:
             metadata["rationale"] = "see statement"
+    metadata = dict(metadata or {})
+    metadata.setdefault("memoryClass", _memory_class(mem_type.value, metadata))
 
     parsed_evidence = [Evidence.model_validate(e) for e in (evidence or [])]
 
@@ -292,6 +299,7 @@ def memory_create(
         )
 
     insert_item(conn, item)
+    _link_item_entities(conn, item.id, {**metadata, "tags": tags})
     insert_history(
         conn, item.id, "created", source="memory_create",
         actor=actor, session=session, request_id=request_id,
@@ -734,6 +742,9 @@ def memory_quality(conn: turso.Connection) -> dict:
     return {
         "total": len(items),
         "byType": dict(Counter(item.type.value for item in items)),
+        "byClass": dict(Counter(
+            _memory_class(item.type.value, item.metadata) for item in items
+        )),
         "fileState": len(file_state),
         "durable": len(durable),
         "signalRatio": round(len(durable) / len(items), 3) if items else 0.0,
@@ -758,6 +769,7 @@ def memory_quality(conn: turso.Connection) -> dict:
         "checks": count("memory_checks"),
         "feedback": count("memory_feedback"),
         "embeddings": count("memory_embeddings"),
+        "entities": count("memory_entities"),
         "digest": [
             {"type": item.type.value, "title": item.title}
             for item in digest
@@ -837,6 +849,9 @@ def memory_relate(
     from_id: str,
     to_id: str,
     kind: str,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
+    source_episode: str | None = None,
     actor: str | None = None,
     session: str | None = None,
     request_id: str | None = None,
@@ -848,7 +863,10 @@ def memory_relate(
         raise ValueError(f"from_id not found: {from_id}")
     if get_item(conn, to_id) is None:
         raise ValueError(f"to_id not found: {to_id}")
-    relation = insert_relation(conn, from_id, to_id, kind)
+    relation = insert_relation(
+        conn, from_id, to_id, kind,
+        valid_from=valid_from, valid_to=valid_to, source_episode=source_episode,
+    )
     insert_history(
         conn, from_id, "related", field=kind, new_value=to_id,
         source="memory_relate", actor=actor, session=session, request_id=request_id,
@@ -1270,6 +1288,59 @@ def _is_file_state_item(item) -> bool:
     )
 
 
+def _memory_class(type_value: str, metadata: dict | None = None) -> str:
+    """One of operational, episodic, procedural, core, semantic."""
+    metadata = metadata or {}
+    explicit = str(metadata.get("memoryClass") or "").strip().lower()
+    if explicit in {"operational", "episodic", "procedural", "core", "semantic"}:
+        return explicit
+    kind = str(metadata.get("kind") or "").lower()
+    if metadata.get("fileKind") == "file_tldr" or kind == "file_tldr":
+        return "operational"
+    if kind == "session_summary":
+        return "episodic"
+    if kind == "workflow":
+        return "procedural"
+    if kind in ("core_profile", "profile"):
+        return "core"
+    return "semantic"
+
+
+def _entity_candidates(metadata: dict | None) -> list[tuple[str, str]]:
+    metadata = metadata or {}
+    found: list[tuple[str, str]] = []
+    path = metadata.get("path")
+    if path:
+        found.append(("file", str(path)))
+    subject = metadata.get("subject")
+    if subject:
+        found.append(("symbol", str(subject)))
+    component = metadata.get("component")
+    if component:
+        found.append(("component", str(component)))
+    for tag in metadata.get("tags") or []:
+        text = str(tag)
+        for prefix, kind in (
+            ("path:", "file"), ("symbol:", "symbol"), ("rule:", "rule"),
+            ("pr:", "pull_request"), ("package:", "package"),
+            ("architecture:", "component"),
+        ):
+            if text.startswith(prefix) and text[len(prefix):].strip():
+                found.append((kind, text[len(prefix):].strip()))
+    return list(dict.fromkeys(found))
+
+
+def _link_item_entities(
+    conn: turso.Connection, item_id: str, metadata: dict | None
+) -> list[str]:
+    linked: list[str] = []
+    for kind, name in _entity_candidates(metadata):
+        entity_id = upsert_entity(conn, kind, name)
+        link_entity(conn, item_id, entity_id)
+        linked.append(entity_id)
+    return linked
+
+
 _NEGATIONS = {"not", "never", "no", "cannot", "can't", "without", "deprecated"}
 
 
@@ -1508,6 +1579,7 @@ def memory_file_context(
     metadata = {
         "kind": "module",
         "fileKind": "file_tldr",
+        "memoryClass": "operational",
         "subject": rel_path,
         "path": rel_path,
         "blobHash": blob_hash,
@@ -1567,6 +1639,7 @@ def memory_file_context(
             },
         )
         upsert_locator(conn, existing.id, rel_path, "file_tldr")
+        _link_item_entities(conn, existing.id, metadata)
         insert_history(
             conn, existing.id, "file_context_refreshed",
             reason=reason or "file content changed",
@@ -1588,6 +1661,7 @@ def memory_file_context(
         importance=0.4,
     )
     insert_item(conn, item)
+    _link_item_entities(conn, item.id, metadata)
     try:
         upsert_locator(conn, item.id, rel_path, "file_tldr")
     except turso.IntegrityError:
@@ -1627,6 +1701,7 @@ def memory_session_summary(
     metadata = {
         "observation": text,
         "kind": "session_summary",
+        "memoryClass": "episodic",
         "sessionId": session_id,
         "files": paths,
         **({"commit": commit} if commit else {}),
@@ -1660,6 +1735,7 @@ def memory_session_summary(
             conn, existing.id, "session_summary_updated",
             reason=reason or "session progressed", source="memory_session_summary",
         )
+        _link_item_entities(conn, existing.id, metadata)
         linked = _link_session_files(conn, existing.id, paths)
         return {
             "id": existing.id, "action": "updated", "sessionId": session_id,
@@ -1678,6 +1754,7 @@ def memory_session_summary(
         importance=0.5,
     )
     insert_item(conn, item)
+    _link_item_entities(conn, item.id, metadata)
     insert_history(
         conn, item.id, "session_summary_created",
         reason=reason or "session summary", source="memory_session_summary",
@@ -1716,6 +1793,405 @@ def _link_session_files(
         except turso.IntegrityError:
             pass
     return linked
+
+
+@atomic
+def memory_workflow(
+    conn: turso.Connection,
+    name: str,
+    steps: list[str],
+    preconditions: list[str] | None = None,
+    verification: list[str] | None = None,
+    failure_modes: list[str] | None = None,
+    tags: list[str] | None = None,
+    summary: str | None = None,
+    scope: str = "project",
+    asserted_by: str = "agent",
+) -> dict:
+    """Create or update one reusable procedure."""
+    clean_steps = [str(step).strip() for step in steps if str(step).strip()]
+    if not name.strip() or not clean_steps:
+        raise ValueError("workflow name and at least one step are required")
+    text = summary or f"{name}: " + " -> ".join(clean_steps[:6])
+    metadata = {
+        "kind": "workflow",
+        "memoryClass": "procedural",
+        "name": name.strip(),
+        "component": f"workflow:{name.strip()}",
+        "responsibility": text[:500],
+        "steps": clean_steps[:40],
+        "preconditions": preconditions or [],
+        "verification": verification or [],
+        "failureModes": failure_modes or [],
+    }
+    row = conn.execute(
+        "SELECT id FROM memory_items WHERE status != 'deleted' "
+        "AND json_extract(metadata, '$.kind') = 'workflow' "
+        "AND json_extract(metadata, '$.name') = ? LIMIT 1",
+        (name.strip(),),
+    ).fetchone()
+    if row is not None:
+        update_item_row(
+            conn, row[0],
+            {
+                "title": f"Workflow: {name.strip()}"[:200],
+                "statement": text[:2000],
+                "details": "\n".join(f"- {step}" for step in clean_steps)[:2000],
+                "metadata": json.dumps(metadata),
+                "updated_at": _now(),
+            },
+        )
+        _link_item_entities(conn, row[0], metadata)
+        insert_history(conn, row[0], "workflow_updated", source="memory_workflow")
+        return {"id": row[0], "action": "updated", "name": name.strip()}
+    created = memory_create(
+        conn,
+        type="architecture",
+        title=f"Workflow: {name.strip()}",
+        statement=text,
+        tags=["workflow", *(tags or [])],
+        details="\n".join(f"- {step}" for step in clean_steps),
+        metadata=metadata,
+        asserted_by=asserted_by,
+        scope=scope,
+        importance=0.6,
+    )
+    return {"id": created["id"], "action": "created", "name": name.strip()}
+
+
+@atomic
+def memory_profile(
+    conn: turso.Connection,
+    section: str,
+    content: str,
+    source: str = "user",
+) -> dict:
+    """Create or update one always-on core profile block."""
+    text = " ".join(content.split())[:2000]
+    if not section.strip() or not text:
+        raise ValueError("profile section and content are required")
+    metadata = {
+        "kind": "core_profile",
+        "memoryClass": "core",
+        "observation": text,
+        "section": section.strip(),
+        "subject": section.strip(),
+    }
+    row = conn.execute(
+        "SELECT id FROM memory_items WHERE status != 'deleted' "
+        "AND json_extract(metadata, '$.kind') = 'core_profile' "
+        "AND json_extract(metadata, '$.section') = ? LIMIT 1",
+        (section.strip(),),
+    ).fetchone()
+    if row is not None:
+        update_item_row(
+            conn, row[0],
+            {
+                "statement": text,
+                "metadata": json.dumps(metadata),
+                "updated_at": _now(),
+            },
+        )
+        insert_history(conn, row[0], "profile_updated", source="memory_profile")
+        return {"id": row[0], "action": "updated", "section": section.strip()}
+    created = memory_create(
+        conn,
+        type="observation",
+        title=f"Profile: {section.strip()}"[:200],
+        statement=text,
+        tags=["core-profile", f"profile:{section.strip()}"],
+        metadata=metadata,
+        asserted_by=source,
+        scope="user",
+        importance=0.9,
+    )
+    return {"id": created["id"], "action": "created", "section": section.strip()}
+
+
+def memory_graph(
+    conn: turso.Connection,
+    entity: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Return the entity graph around one name, or the whole graph summary."""
+    limit = max(1, min(int(limit), 200))
+    rows = conn.execute(
+        "SELECT e.id, e.kind, e.name, COUNT(l.item_id) "
+        "FROM memory_entities e LEFT JOIN memory_entity_links l ON l.entity_id = e.id "
+        "GROUP BY e.id, e.kind, e.name ORDER BY e.kind, e.name LIMIT ?",
+        (limit,),
+    ).fetchall()
+    entities = [
+        {"id": row[0], "kind": row[1], "name": row[2], "items": int(row[3])}
+        for row in rows
+        if entity is None or entity.lower() in row[2].lower()
+    ]
+    if entity is not None and not entities:
+        return {"entity": entity, "entities": [], "items": [], "relations": []}
+    selected = entities[:limit]
+    item_ids: set[str] = set()
+    for node in selected:
+        item_ids.update(get_items_for_entity(conn, node["id"]))
+    items = []
+    for item_id in list(item_ids)[:limit]:
+        item = get_item(conn, item_id)
+        if item is not None:
+            items.append({
+                "id": item.id,
+                "type": item.type.value,
+                "title": item.title,
+                "memoryClass": _memory_class(item.type.value, item.metadata),
+            })
+    relations = [
+        relation for relation in get_all_relations(conn)
+        if relation["from_id"] in item_ids or relation["to_id"] in item_ids
+    ][:limit]
+    return {"entity": entity, "entities": selected, "items": items, "relations": relations}
+
+
+@atomic
+def memory_rollup(
+    conn: turso.Connection,
+    path_prefix: str = "",
+    apply: bool = False,
+    min_files: int = 2,
+) -> dict:
+    """Summarize file TLDRs into module and project-level memories."""
+    items = get_all_items(conn)
+    files = [
+        item for item in items
+        if _is_file_state_item(item)
+        and str((item.metadata or {}).get("path") or "").startswith(path_prefix)
+    ]
+    groups: dict[str, list] = {}
+    for item in files:
+        rel = str(item.metadata.get("path"))
+        parent = str(Path(rel).parent)
+        groups.setdefault("." if parent in ("", ".") else parent, []).append(item)
+    proposed = []
+    for prefix, members in sorted(groups.items()):
+        if len(members) < min_files:
+            continue
+        summaries = []
+        for item in members[:8]:
+            statement = item.statement.split(". ")[0].strip()
+            summaries.append(f"{Path(item.metadata['path']).name}: {statement}")
+        text = "; ".join(summaries)[:2000]
+        proposed.append({"prefix": prefix, "fileCount": len(members), "summary": text})
+    if apply:
+        for proposal in proposed:
+            _upsert_rollup(
+                conn, proposal["prefix"], "module_summary",
+                f"Module: {proposal['prefix']}",
+                proposal["summary"],
+                {"pathPrefix": proposal["prefix"], "fileCount": proposal["fileCount"]},
+            )
+        project_text = "; ".join(
+            f"{proposal['prefix']} ({proposal['fileCount']} files)"
+            for proposal in proposed[:20]
+        ) or "No module summaries yet."
+        _upsert_rollup(
+            conn, "", "project_summary", "Project memory map",
+            project_text,
+            {"pathPrefix": "", "moduleCount": len(proposed)},
+        )
+    return {"apply": apply, "modules": proposed, "count": len(proposed)}
+
+
+def _upsert_rollup(
+    conn: turso.Connection,
+    prefix: str,
+    kind: str,
+    title: str,
+    statement: str,
+    metadata: dict,
+) -> None:
+    meta = {
+        "kind": kind,
+        "memoryClass": "semantic",
+        "subject": prefix or "project",
+        "component": f"rollup:{prefix or 'project'}",
+        "responsibility": statement[:500],
+        **metadata,
+    }
+    row = conn.execute(
+        "SELECT id FROM memory_items WHERE status != 'deleted' "
+        "AND json_extract(metadata, '$.kind') = ? "
+        "AND json_extract(metadata, '$.pathPrefix') = ? LIMIT 1",
+        (kind, prefix),
+    ).fetchone()
+    if row is not None:
+        update_item_row(
+            conn, row[0],
+            {
+                "title": title[:200],
+                "statement": statement[:2000],
+                "metadata": json.dumps(meta),
+                "updated_at": _now(),
+            },
+        )
+        insert_history(conn, row[0], "rollup_updated", source="memory_rollup")
+        return
+    memory_create(
+        conn,
+        type="architecture",
+        title=title,
+        statement=statement,
+        tags=["rollup", kind],
+        metadata=meta,
+        asserted_by="source",
+        importance=0.6,
+    )
+
+
+def memory_heat(conn: turso.Connection, limit: int = 20) -> dict:
+    """Rank memories by recency, importance, and observed access."""
+    now = datetime.now(timezone.utc)
+    scored = []
+    for item in get_all_items(conn):
+        try:
+            updated = datetime.fromisoformat(item.updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            updated = now
+        age_days = max(0.0, (now - updated).total_seconds() / 86400)
+        recency = pow(0.5, age_days / 30)
+        access = 0.0
+        row = conn.execute(
+            "SELECT access_count, last_accessed_at FROM memory_items WHERE id = ?",
+            (item.id,),
+        ).fetchone()
+        if row is not None and row[0]:
+            access = min(1.0, float(row[0]) / 20.0)
+        score = 0.55 * recency + 0.30 * item.importance + 0.15 * access
+        scored.append({
+            "id": item.id,
+            "title": item.title,
+            "memoryClass": _memory_class(item.type.value, item.metadata),
+            "heat": round(score, 3),
+            "ageDays": round(age_days, 1),
+        })
+    scored.sort(key=lambda entry: entry["heat"], reverse=True)
+    return {"count": len(scored), "top": scored[:limit], "cold": scored[-limit:]}
+
+
+@atomic
+def memory_touch(conn: turso.Connection, ids: list[str]) -> dict:
+    """Record that memories were read, feeding the heat score."""
+    touched = 0
+    now = _now()
+    for item_id in list(dict.fromkeys(ids))[:100]:
+        row = conn.execute(
+            "SELECT id FROM memory_items WHERE id = ? AND status != 'deleted'",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            continue
+        conn.execute(
+            "UPDATE memory_items SET access_count = COALESCE(access_count, 0) + 1, "
+            "last_accessed_at = ? WHERE id = ?",
+            (now, item_id),
+        )
+        touched += 1
+    return {"touched": touched, "ids": ids[:100]}
+
+
+@atomic
+def memory_decay(
+    conn: turso.Connection,
+    days: int = 180,
+    dry_run: bool = True,
+    min_importance: float = 0.5,
+) -> dict:
+    """Archive low-heat operational and episodic memories past their TTL."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    candidates = []
+    for item in get_all_items(conn):
+        if item.importance >= min_importance:
+            continue
+        if _memory_class(item.type.value, item.metadata) not in ("operational", "episodic"):
+            continue
+        try:
+            updated = datetime.fromisoformat(item.updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if updated < cutoff:
+            candidates.append(item)
+    if not dry_run:
+        for item in candidates:
+            soft_delete(conn, item.id)
+            insert_history(
+                conn, item.id, "decayed", reason=f"older than {days} days",
+                source="memory_decay",
+            )
+    return {
+        "dry_run": dry_run,
+        "days": days,
+        "count": len(candidates),
+        "ids": [item.id for item in candidates],
+    }
+
+
+@atomic
+def memory_induce_workflow(
+    conn: turso.Connection,
+    session_id: str,
+    apply: bool = False,
+    name: str | None = None,
+) -> dict:
+    """Turn one session summary into a reusable workflow draft."""
+    row = conn.execute(
+        "SELECT id FROM memory_items WHERE status != 'deleted' "
+        "AND json_extract(metadata, '$.kind') = 'session_summary' "
+        "AND json_extract(metadata, '$.sessionId') = ? LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"session summary not found: {session_id}")
+    item = get_item(conn, row[0])
+    metadata = item.metadata or {}
+    files = [str(path) for path in metadata.get("files") or []]
+    steps = [f"Inspect {path}" for path in files] + [
+        "Apply the change",
+        "Run the relevant tests",
+        "Record the outcome",
+    ]
+    proposed = {
+        "name": name or item.title.removeprefix("Session: ")[:80],
+        "steps": steps,
+        "summary": item.statement,
+        "sessionId": session_id,
+    }
+    if not apply:
+        return {"apply": False, "proposed": proposed}
+    created = memory_workflow(
+        conn, proposed["name"], steps,
+        verification=["Relevant tests pass", "Audit remains clean"],
+        summary=proposed["summary"],
+        tags=[f"session:{session_id}"],
+    )
+    return {"apply": True, **created}
+
+
+def memory_maintenance(conn: turso.Connection, apply: bool = False) -> dict:
+    """Run the background consolidation cycle in one call."""
+    return {
+        "entities": memory_backfill_entities(conn),
+        "revalidate": memory_revalidate(conn, dry_run=not apply),
+        "rollup": memory_rollup(conn, apply=apply),
+        "decay": memory_decay(conn, dry_run=not apply),
+        "consolidate": memory_consolidate(conn, apply=apply),
+    }
+
+
+@atomic
+def memory_backfill_entities(conn: turso.Connection) -> dict:
+    """Link existing memories to entities without changing their statements."""
+    linked = 0
+    for item in get_all_items(conn):
+        linked += len(_link_item_entities(
+            conn, item.id, {**(item.metadata or {}), "tags": item.tags},
+        ))
+    return {"links": linked, "entities": len(get_all_entities(conn))}
 
 
 def _clean_summary(text: str) -> str:

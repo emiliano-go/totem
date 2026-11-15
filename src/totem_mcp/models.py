@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Single source of truth for the on-disk schema. ``db`` imports this constant;
 # keeping a second copy here silently diverged (8 vs 9) and made every model
 # instance claim a schema it was not stored under.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Hard resource limits: an agent must not be able to persist an unbounded blob.
 LIMITS = {

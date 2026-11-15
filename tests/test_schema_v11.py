@@ -1,4 +1,4 @@
-"""Schema v11: validity windows, persisted embeddings, and feedback."""
+"""Schema v12: validity, embeddings, feedback, heat, entities, and temporal edges."""
 
 from __future__ import annotations
 
@@ -16,17 +16,24 @@ from totem_mcp.tools import memory_create
 
 
 def test_schema_version_and_objects(fresh_db):
-    assert models.SCHEMA_VERSION == 11
+    assert models.SCHEMA_VERSION == 12
     columns = {
         row[1] for row in fresh_db.execute("PRAGMA table_info(memory_items)")
     }
-    assert {"valid_from", "valid_to"} <= columns
+    assert {"valid_from", "valid_to", "access_count", "last_accessed_at"} <= columns
+    relation_columns = {
+        row[1] for row in fresh_db.execute("PRAGMA table_info(memory_relations)")
+    }
+    assert {"recorded_at", "valid_from", "valid_to", "source_episode"} <= relation_columns
     tables = {
         row[0] for row in fresh_db.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         )
     }
-    assert {"memory_embeddings", "memory_feedback"} <= tables
+    assert {
+        "memory_embeddings", "memory_feedback",
+        "memory_entities", "memory_entity_links",
+    } <= tables
 
 
 def test_validity_window_round_trip(fresh_db):

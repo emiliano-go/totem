@@ -92,6 +92,10 @@ CREATE TABLE IF NOT EXISTS memory_relations (
     to_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    recorded_at TEXT,
+    valid_from TEXT,
+    valid_to TEXT,
+    source_episode TEXT,
     UNIQUE (from_id, to_id, kind)
 );
 """
@@ -102,6 +106,27 @@ CREATE INDEX IF NOT EXISTS memory_relations_to ON memory_relations (to_id);
 
 CREATE_ITEM_INDEXES = """
 CREATE INDEX IF NOT EXISTS memory_items_stmt_norm ON memory_items (statement_normalized);
+"""
+
+CREATE_ENTITIES = """
+CREATE TABLE IF NOT EXISTS memory_entities (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    canonical TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (kind, canonical)
+);
+CREATE TABLE IF NOT EXISTS memory_entity_links (
+    item_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (item_id, entity_id, relation)
+);
+CREATE INDEX IF NOT EXISTS memory_entity_links_entity ON memory_entity_links (entity_id);
 """
 
 # Locators: indexed retrieval of implementation memories by (path, subject) so
@@ -391,6 +416,7 @@ def _init_db_once(conn: turso.Connection) -> None:
     conn.executescript(CREATE_FEEDBACK)
     conn.executescript(CREATE_RELATIONS)
     conn.executescript(CREATE_RELATIONS_INDEXES)
+    conn.executescript(CREATE_ENTITIES)
     conn.executescript(CREATE_LOCATORS)
     conn.executescript(CREATE_LOCATORS_INDEXES)
     conn.executescript(CREATE_META)
@@ -718,6 +744,33 @@ def _migrate_retrieval_v2(conn: turso.Connection) -> None:
     conn.executescript(CREATE_FEEDBACK)
 
 
+def _migrate_memory_os(conn: turso.Connection) -> None:
+    """v12: access heat, bi-temporal relation edges, and entities."""
+    _add_columns(
+        conn,
+        "memory_items",
+        [
+            ("access_count", "access_count INTEGER DEFAULT 0"),
+            ("last_accessed_at", "last_accessed_at TEXT"),
+        ],
+    )
+    _add_columns(
+        conn,
+        "memory_relations",
+        [
+            ("recorded_at", "recorded_at TEXT"),
+            ("valid_from", "valid_from TEXT"),
+            ("valid_to", "valid_to TEXT"),
+            ("source_episode", "source_episode TEXT"),
+        ],
+    )
+    conn.executescript(CREATE_ENTITIES)
+    conn.execute(
+        "UPDATE memory_relations SET recorded_at = created_at "
+        "WHERE recorded_at IS NULL"
+    )
+
+
 MIGRATIONS = [
     (2, _migrate_conflicts),
     (3, _migrate_v3),
@@ -729,6 +782,7 @@ MIGRATIONS = [
     (9, _migrate_locators),
     (10, _migrate_checks_and_chain),
     (11, _migrate_retrieval_v2),
+    (12, _migrate_memory_os),
 ]
 
 
@@ -792,6 +846,15 @@ def _verify_migration(conn: turso.Connection, target: int) -> None:
             missing.add("memory_embeddings_model")
         if not _has_index(conn, "memory_feedback_item"):
             missing.add("memory_feedback_item")
+    elif target == 12:
+        missing = {"access_count", "last_accessed_at"} - _columns(conn, "memory_items")
+        missing |= {"recorded_at", "valid_from", "valid_to", "source_episode"} - _columns(
+            conn, "memory_relations"
+        )
+        if not _has_table(conn, "memory_entities"):
+            missing.add("memory_entities")
+        if not _has_table(conn, "memory_entity_links"):
+            missing.add("memory_entity_links")
     else:
         missing = set()
     if missing:
@@ -1582,7 +1645,14 @@ def _relation_reaches(
 
 
 def insert_relation(
-    conn: turso.Connection, from_id: str, to_id: str, kind: str
+    conn: turso.Connection,
+    from_id: str,
+    to_id: str,
+    kind: str,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
+    source_episode: str | None = None,
+    recorded_at: str | None = None,
 ) -> dict:
     """Create a typed relation between two memories.
 
@@ -1605,7 +1675,8 @@ def insert_relation(
         if row is None:
             raise ValueError(f"relation endpoint not found: {endpoint}")
     existing = conn.execute(
-        "SELECT id, from_id, to_id, kind FROM memory_relations "
+        "SELECT id, from_id, to_id, kind, recorded_at, valid_from, valid_to, source_episode "
+        "FROM memory_relations "
         "WHERE from_id = ? AND to_id = ? AND kind = ?",
         (from_id, to_id, kind),
     ).fetchone()
@@ -1615,16 +1686,26 @@ def insert_relation(
             "from_id": existing[1],
             "to_id": existing[2],
             "kind": existing[3],
+            "recorded_at": existing[4],
+            "valid_from": existing[5],
+            "valid_to": existing[6],
+            "source_episode": existing[7],
         }
     if kind in ("supersedes", "invalidates") and _relation_reaches(conn, to_id, from_id, kind):
         raise ValueError(f"'{kind}' relation would create a cycle")
     relation_id = str(uuid.uuid4())
+    now = recorded_at or datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "INSERT INTO memory_relations (id, from_id, to_id, kind, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (relation_id, from_id, to_id, kind, datetime.now(timezone.utc).isoformat()),
+        "INSERT INTO memory_relations "
+        "(id, from_id, to_id, kind, created_at, recorded_at, valid_from, valid_to, source_episode) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (relation_id, from_id, to_id, kind, now, now, valid_from, valid_to, source_episode),
     )
-    return {"id": relation_id, "from_id": from_id, "to_id": to_id, "kind": kind}
+    return {
+        "id": relation_id, "from_id": from_id, "to_id": to_id, "kind": kind,
+        "recorded_at": now, "valid_from": valid_from, "valid_to": valid_to,
+        "source_episode": source_episode,
+    }
 
 
 def _relation_from_row(row) -> dict:
@@ -1634,12 +1715,17 @@ def _relation_from_row(row) -> dict:
         "to_id": row[2],
         "kind": row[3],
         "created_at": row[4],
+        "recorded_at": row[5],
+        "valid_from": row[6],
+        "valid_to": row[7],
+        "source_episode": row[8],
     }
 
 
 def get_relations_for_item(conn: turso.Connection, item_id: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, from_id, to_id, kind, created_at FROM memory_relations "
+        "SELECT id, from_id, to_id, kind, created_at, recorded_at, valid_from, valid_to, source_episode "
+        "FROM memory_relations "
         "WHERE from_id = ? OR to_id = ?",
         (item_id, item_id),
     ).fetchall()
@@ -1651,7 +1737,8 @@ def get_relations_for_items(conn: turso.Connection, item_ids: list[str]) -> list
         return []
     placeholders = ", ".join("?" for _ in item_ids)
     rows = conn.execute(
-        f"SELECT id, from_id, to_id, kind, created_at FROM memory_relations "
+        f"SELECT id, from_id, to_id, kind, created_at, recorded_at, valid_from, valid_to, source_episode "
+        f"FROM memory_relations "
         f"WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
         (*item_ids, *item_ids),
     ).fetchall()
@@ -1660,9 +1747,83 @@ def get_relations_for_items(conn: turso.Connection, item_ids: list[str]) -> list
 
 def get_all_relations(conn: turso.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, from_id, to_id, kind, created_at FROM memory_relations"
+        "SELECT id, from_id, to_id, kind, created_at, recorded_at, valid_from, valid_to, source_episode "
+        "FROM memory_relations"
     ).fetchall()
     return [_relation_from_row(r) for r in rows]
+
+
+def upsert_entity(
+    conn: turso.Connection,
+    kind: str,
+    name: str,
+    metadata: dict | None = None,
+) -> str:
+    """Return the stable id of one named entity."""
+    from datetime import datetime, timezone
+
+    canonical = name.strip().lower()
+    if not canonical:
+        raise ValueError("entity name is required")
+    row = conn.execute(
+        "SELECT id FROM memory_entities WHERE kind = ? AND canonical = ?",
+        (kind, canonical),
+    ).fetchone()
+    if row is not None:
+        return row[0]
+    entity_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO memory_entities "
+        "(id, kind, name, canonical, metadata, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (entity_id, kind, name.strip(), canonical, json.dumps(metadata or {}), now, now),
+    )
+    return entity_id
+
+
+def link_entity(
+    conn: turso.Connection,
+    item_id: str,
+    entity_id: str,
+    relation: str = "about",
+) -> None:
+    """Link one memory to one entity, idempotently."""
+    from datetime import datetime, timezone
+
+    conn.execute(
+        "INSERT OR IGNORE INTO memory_entity_links "
+        "(item_id, entity_id, relation, created_at) VALUES (?, ?, ?, ?)",
+        (item_id, entity_id, relation, datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def get_entities_for_item(conn: turso.Connection, item_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT e.id, e.kind, e.name, l.relation "
+        "FROM memory_entity_links l JOIN memory_entities e ON e.id = l.entity_id "
+        "WHERE l.item_id = ? ORDER BY e.kind, e.name",
+        (item_id,),
+    ).fetchall()
+    return [
+        {"id": row[0], "kind": row[1], "name": row[2], "relation": row[3]}
+        for row in rows
+    ]
+
+
+def get_items_for_entity(conn: turso.Connection, entity_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT item_id FROM memory_entity_links WHERE entity_id = ?",
+        (entity_id,),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def get_all_entities(conn: turso.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, kind, name FROM memory_entities ORDER BY kind, name"
+    ).fetchall()
+    return [{"id": row[0], "kind": row[1], "name": row[2]} for row in rows]
 
 
 def get_history(conn: turso.Connection, item_id: str) -> list[dict]:

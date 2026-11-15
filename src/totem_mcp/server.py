@@ -9,12 +9,13 @@ from mcp.server.fastmcp import FastMCP
 
 from .calibration import validate_and_promote
 from .context import engineering_context
-from .db import db_connection
+from .db import connect, db_connection, get_user_db_path, init_db
 from .db import get_all_items, list_task_items, list_command_items
 from .embeddings import status as embedding_status
 from .errors import error_response, not_found
 from .eval_bench import auto_cases, evaluate, gate, load_cases
 from .hardening import harden_registry, tool_manifest
+from .markdown import export_markdown, import_markdown
 from .tools import (
     memory_audit,
     memory_quality,
@@ -25,9 +26,17 @@ from .tools import (
     memory_feedback_list,
     memory_file_context,
     memory_history,
+    memory_heat,
+    memory_induce_workflow,
+    memory_maintenance,
+    memory_profile,
     memory_relate,
     memory_relations,
+    memory_rollup,
     memory_session_summary,
+    memory_workflow,
+    memory_graph,
+    memory_decay,
     memory_delete,
     memory_export,
     memory_gc,
@@ -38,6 +47,7 @@ from .tools import (
     memory_revalidate,
     memory_search,
     memory_train_models,
+    memory_touch,
     memory_update,
     memory_verify,
     register_file_read,
@@ -143,6 +153,9 @@ def memory_relate_tool(
     from_id: str,
     to_id: str,
     kind: str,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
+    source_episode: str | None = None,
     project: str | None = None,
     actor: str | None = None,
     session: str | None = None,
@@ -154,7 +167,10 @@ def memory_relate_tool(
     Args:
         from_id: Source memory ID
         to_id: Target memory ID
-        kind: supersedes, contradicts, invalidates, derived_from, verified_by, refines, depends_on (supersedes/invalidates update the target status)
+        kind: supersedes, contradicts, invalidates, derived_from, verified_by, refines, depends_on, touches (supersedes/invalidates update the target status)
+        valid_from: Optional ISO start of the relation validity window.
+        valid_to: Optional ISO end of the relation validity window.
+        source_episode: Optional session or episode id that recorded the edge.
         project: Optional project root path.
     """
     with db_connection(project=project) as conn:
@@ -162,6 +178,8 @@ def memory_relate_tool(
             return json.dumps(
                 memory_relate(
                     conn, from_id, to_id, kind,
+                    valid_from=valid_from, valid_to=valid_to,
+                    source_episode=source_episode,
                     actor=actor, session=session, request_id=request_id, operation_id=operation_id,
                 ),
                 indent=2,
@@ -914,6 +932,162 @@ def memory_session_summary_tool(
                 ),
                 indent=2,
             )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_workflow_tool(
+    name: str,
+    steps: list[str],
+    preconditions: list[str] | None = None,
+    verification: list[str] | None = None,
+    failure_modes: list[str] | None = None,
+    tags: list[str] | None = None,
+    summary: str | None = None,
+    scope: str = "project",
+    asserted_by: str = "agent",
+    project: str | None = None,
+) -> str:
+    """Create or update a reusable procedure with steps and verification."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_workflow(
+                conn, name=name, steps=steps, preconditions=preconditions,
+                verification=verification, failure_modes=failure_modes,
+                tags=tags, summary=summary, scope=scope, asserted_by=asserted_by,
+            ), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_profile_tool(section: str, content: str, source: str = "user") -> str:
+    """Create or update one always-on user profile block in the user database."""
+    conn = connect(db_path=get_user_db_path())
+    try:
+        init_db(conn)
+        return json.dumps(memory_profile(conn, section, content, source), indent=2)
+    except Exception as e:
+        return error_response(e)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def memory_graph_tool(
+    entity: str | None = None,
+    limit: int = 50,
+    project: str | None = None,
+) -> str:
+    """Return entities and the memories linked to them."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_graph(conn, entity=entity, limit=limit), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_rollup_tool(
+    path_prefix: str = "",
+    apply: bool = False,
+    min_files: int = 2,
+    project: str | None = None,
+) -> str:
+    """Summarize file-state memories into module and project memories."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_rollup(conn, path_prefix=path_prefix, apply=apply, min_files=min_files),
+                indent=2,
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_heat_tool(limit: int = 20, project: str | None = None) -> str:
+    """Rank memories by recency, importance, and access."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_heat(conn, limit=limit), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_touch_tool(ids: list[str], project: str | None = None) -> str:
+    """Record that memories were read, feeding the heat score."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_touch(conn, ids), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_decay_tool(
+    days: int = 180,
+    dry_run: bool = True,
+    min_importance: float = 0.5,
+    project: str | None = None,
+) -> str:
+    """Archive low-heat operational and episodic memories past their TTL."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_decay(conn, days=days, dry_run=dry_run, min_importance=min_importance),
+                indent=2,
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_induce_workflow_tool(
+    session_id: str,
+    apply: bool = False,
+    name: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Turn one session summary into a reusable workflow draft."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_induce_workflow(conn, session_id, apply=apply, name=name),
+                indent=2,
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_maintenance_tool(apply: bool = False, project: str | None = None) -> str:
+    """Run revalidation, rollup, decay, and consolidation in one cycle."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_maintenance(conn, apply=apply), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_export_markdown_tool(directory: str, project: str | None = None) -> str:
+    """Export active memories as Markdown notes with wikilink relations."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(export_markdown(conn, directory), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_import_markdown_tool(directory: str, project: str | None = None) -> str:
+    """Import Markdown notes produced by memory_export_markdown."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(import_markdown(conn, directory), indent=2)
         except Exception as e:
             return error_response(e)
 
