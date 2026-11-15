@@ -381,7 +381,11 @@ def engineering_context(
             if not include_stale:
                 continue
         candidate = candidate_by_id.get(item.id)
-        if candidate is not None and candidate.validity <= 0.0 and not include_expired:
+        if (
+            candidate is not None
+            and candidate.state == "expired"
+            and not include_expired
+        ):
             continue
         score = _score_item(
             item, tags, task_words, paths,
@@ -389,7 +393,7 @@ def engineering_context(
             trust=trust_scores.get(item.id),
             stale_cache=stale_cache,
         )
-        if candidate is not None and candidate.validity <= 0.0:
+        if candidate is not None and candidate.state == "expired":
             score *= 0.5
         if reranker is not None and reranker.weights is not None and candidate is not None:
             blended = 1.0 / (

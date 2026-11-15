@@ -140,6 +140,7 @@ class Candidate:
     tag: float = 0.0
     graph: float = 0.0
     validity: float = 1.0
+    state: str = "current"
     reasons: list[str] = field(default_factory=list)
     fused: float = 0.0
 
@@ -157,16 +158,21 @@ def _parse_time(value: str | None) -> datetime | None:
         return None
 
 
-def validity(item, as_of: datetime | None = None) -> float:
-    """1.0 while the claim is valid at ``as_of`` (default now), else 0.0."""
+def temporal_state(item, as_of: datetime | None = None) -> str:
+    """Return 'current', 'future', or 'expired' at ``as_of`` (default now)."""
     moment = as_of or datetime.now(timezone.utc)
     start = _parse_time(getattr(item, "valid_from", None))
     end = _parse_time(getattr(item, "valid_to", None))
     if start is not None and moment < start:
-        return 0.0
+        return "future"
     if end is not None and moment > end:
-        return 0.0
-    return 1.0
+        return "expired"
+    return "current"
+
+
+def validity(item, as_of: datetime | None = None) -> float:
+    """1.0 while the claim is valid at ``as_of`` (default now), else 0.0."""
+    return 1.0 if temporal_state(item, as_of) == "current" else 0.0
 
 
 def _path_hits(item, paths: set[str]) -> tuple[float, bool]:
@@ -245,7 +251,9 @@ def build_candidates(
         item.id: Candidate(item=item) for item in items
     }
     for item in items:
-        candidates[item.id].validity = validity(item, as_of)
+        state = temporal_state(item, as_of)
+        candidates[item.id].state = state
+        candidates[item.id].validity = 1.0 if state == "current" else 0.0
 
     terms = _query_terms(query)
     tag_set = {tag.lower() for tag in (tags or [])}
@@ -351,8 +359,11 @@ def build_candidates(
         ),
         reverse=True,
     )
+    # A claim that is not valid yet is never a candidate; ``include_expired``
+    # only re-admits claims whose validity window has ended.
+    ordered = [c for c in ordered if c.state != "future"]
     if not include_expired:
-        ordered = [c for c in ordered if c.validity > 0.0]
+        ordered = [c for c in ordered if c.state != "expired"]
     if not include_stale:
         ordered = [
             c for c in ordered

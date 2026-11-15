@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.9.1 (2026-11-14)
+
+### Fixes
+
+- **Future-dated claims.** `include_expired` now re-admits only claims whose
+  validity window has ended. Claims whose `valid_from` is still in the future
+  stay out of context and search until `as_of` reaches them.
+
 ## 0.9.0 (2026-11-14)
 
 ### Retrieval v2

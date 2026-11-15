@@ -68,6 +68,29 @@ def test_temporal_validity_excludes_expired(fresh_db):
     assert expired["id"] in result["selectedIds"]
 
 
+def test_future_claims_are_not_released_by_include_expired(fresh_db):
+    future_start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    future = _item(
+        fresh_db, "Future", "This queue will use adaptive retries.", ["queue"],
+        valid_from=future_start,
+    )
+    candidates, _meta = build_candidates(
+        fresh_db, "adaptive retries", ["queue"], None, include_expired=True
+    )
+    assert future["id"] not in {candidate.item.id for candidate in candidates}
+
+    result = engineering_context(
+        fresh_db, tags=["queue"], task="adaptive retries", include_expired=True
+    )
+    assert future["id"] not in result["selectedIds"]
+
+    later = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+    result = engineering_context(
+        fresh_db, tags=["queue"], task="adaptive retries", as_of=later
+    )
+    assert future["id"] in result["selectedIds"]
+
+
 def test_search_is_hybrid_and_scored(fresh_db):
     item = _item(
         fresh_db, "Queue", "Failed deliveries retry with exponential backoff.", ["infra"]
