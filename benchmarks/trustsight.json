@@ -1,0 +1,65 @@
+{
+  "cases": [
+    {
+      "name": "coverage-ledger-decision",
+      "query": "coverage ledger A009 disposition",
+      "expect": ["Coverage ledger complete"]
+    },
+    {
+      "name": "benign-false-positive-definition",
+      "query": "benign false positive definition",
+      "expect": ["Benign false positive"]
+    },
+    {
+      "name": "malicious-false-positive-definition",
+      "query": "malicious false positive definition",
+      "expect": ["Malicious false positive"]
+    },
+    {
+      "name": "true-positive-evidence-bar",
+      "query": "true positive evidence bar",
+      "expect": ["True positive"]
+    },
+    {
+      "name": "worker-module",
+      "query": "worker queue scan store",
+      "expect": ["Module: trustsight-feed/worker"]
+    },
+    {
+      "name": "analysis-pipeline-module",
+      "query": "analysis pipeline module",
+      "expect": ["Module: trustsight/src/trustsight/analysis/pipeline"]
+    },
+    {
+      "name": "benign-corpus-baseline",
+      "query": "benign corpus coverage baseline",
+      "expect": ["Benign corpus coverage baseline"]
+    },
+    {
+      "name": "libgit2-gotcha",
+      "query": "libgit2 security gate failure",
+      "expect": ["libgit2 security gate fails"]
+    },
+    {
+      "name": "mfp-fix-pr",
+      "query": "MFP fix set PR 179",
+      "expect": ["MFP fix set shipped"]
+    },
+    {
+      "name": "codeql-alerts",
+      "query": "CodeQL alerts allowlist assertion",
+      "expect": ["CodeQL alerts"]
+    },
+    {
+      "name": "docs-information-architecture",
+      "query": "docs information architecture sections",
+      "expect": ["Docs IA"]
+    },
+    {
+      "name": "unrelated-abstention",
+      "query": "xyzzyplugh",
+      "tags": ["nonexistent"],
+      "abstain": true
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import json
 import click
 
 from .context import engineering_context
+from .benchmarks import load_cases, run_cases
 from .db import connect, db_connection, get_user_db_path, init_db
 from .markdown import export_markdown, import_markdown
 from .tools import (
@@ -17,6 +18,7 @@ from .tools import (
     memory_create,
     memory_delete,
     memory_export,
+    memory_evidence_refresh,
     memory_file_context,
     memory_gc,
     memory_get,
@@ -265,6 +267,37 @@ def quality(ctx: click.Context) -> None:
     """Report memory signal, provenance, stale evidence, and conflicts."""
     with db_connection(project=ctx.obj.get("project")) as conn:
         click.echo(json.dumps(memory_quality(conn), indent=2))
+
+
+@cli.command("evidence-refresh")
+@click.option("--id", "ids", multiple=True, help="Only these memory ids.")
+@click.option("--apply", "apply_", is_flag=True, help="Apply repairs (default dry-run).")
+@click.option("--repair-orphans", is_flag=True, help="Replace uniquely matched orphan paths.")
+@click.pass_context
+def evidence_refresh_cmd(
+    ctx: click.Context, ids: tuple[str, ...], apply_: bool, repair_orphans: bool,
+) -> None:
+    """Re-hash evidence, relocate symbols, and report orphaned paths."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            memory_evidence_refresh(
+                conn, ids=list(ids) or None, dry_run=not apply_,
+                repair_orphans=repair_orphans,
+            ),
+            indent=2,
+        ))
+
+
+@cli.command("benchmark")
+@click.argument("cases", type=click.Path(exists=True))
+@click.option("--k", default=5, type=int)
+@click.pass_context
+def benchmark_cmd(ctx: click.Context, cases: str, k: int) -> None:
+    """Run a deterministic title-level retrieval benchmark."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(
+            run_cases(conn, load_cases(cases), k=k), indent=2,
+        ))
 
 
 @cli.command("workflow")

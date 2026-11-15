@@ -55,7 +55,7 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **61 MCP tools** (core, typed wrappers, and memory maintenance)
+- **62 MCP tools** (core, typed wrappers, and memory maintenance)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
@@ -324,7 +324,7 @@ totem quality
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (61)
+## MCP tools (62)
 
 | Tool | Description |
 |------|-------------|
@@ -350,6 +350,7 @@ totem quality
 | `memory_rollup_tool` | Summarize file state into module and project memories |
 | `memory_heat_tool` | Rank memories by recency, importance, and access |
 | `memory_touch_tool` | Record that memories were read, feeding heat |
+| `memory_evidence_refresh_tool` | Re-hash evidence, relocate symbols, and report orphaned paths |
 | `memory_decay_tool` | Archive low-heat operational and episodic memories |
 | `memory_induce_workflow_tool` | Turn a session summary into a workflow draft |
 | `memory_maintenance_tool` | Run revalidation, rollup, decay, and consolidation |
@@ -362,7 +363,7 @@ totem quality
 | `*_create` (14) | Typed wrappers for each memory type |
 | `flag_ambiguity` | Convenience wrapper for ambiguity creation |
 
-## CLI commands (39)
+## CLI commands (41)
 
 | Command | Description |
 |---------|-------------|

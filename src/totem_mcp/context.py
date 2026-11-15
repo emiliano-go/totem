@@ -39,6 +39,17 @@ _SKIP_STATUSES = {
 _BOOSTED_TYPES = {MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.AMBIGUITY}
 
 
+def _is_file_state(item) -> bool:
+    metadata = item.metadata or {}
+    if metadata.get("fileKind") == "file_tldr":
+        return True
+    return (
+        item.type.value == "implementation"
+        and item.title.startswith("File:")
+        and item.statement.startswith(("Read ", "Patched ", "Changed "))
+    )
+
+
 def _semantic_enabled() -> bool:
     return os.environ.get("TOTEM_SEMANTIC", "1").strip().lower() not in (
         "0", "off", "false", "no",
@@ -259,6 +270,7 @@ def engineering_context(
     max_item_chars: int | None = None,
     as_of: str | None = None,
     include_expired: bool = False,
+    include_file_state: bool = False,
 ) -> dict:
     """Assemble engineering context.
 
@@ -319,6 +331,19 @@ def engineering_context(
             if user_conn is not None:
                 user_conn.close()
 
+    if not include_file_state:
+        all_items = [
+            item for item in all_items if not _is_file_state(item)
+        ]
+        candidate_by_id = {
+            item_id: candidate for item_id, candidate in candidate_by_id.items()
+            if not _is_file_state(candidate.item)
+        }
+        db_user_ids = {
+            item_id for item_id in db_user_ids
+            if item_id in candidate_by_id
+        }
+
     # Candidate reasons explain the retrieval leg that surfaced each item.
     path_matched = {
         item_id for item_id, candidate in candidate_by_id.items()
@@ -330,7 +355,7 @@ def engineering_context(
     }
     semantic_ids = {
         item_id for item_id, candidate in candidate_by_id.items()
-        if candidate.lexical > 0 or candidate.dense > 0
+        if candidate.lexical > 0 or candidate.dense >= 0.25
     }
     extra_ids = path_matched | relation_hop_ids | semantic_ids
     if semantic_candidates is not None:
@@ -412,14 +437,23 @@ def engineering_context(
     # a low-scoring result because they are relevant even without lexical or
     # dense agreement.
     threshold = float(os.environ.get("TOTEM_ABSTAIN_SCORE", "0.12"))
-    top_score = scored[0][0] if scored else 0.0
+    relevant_ids = {
+        item_id for item_id, candidate in candidate_by_id.items()
+        if candidate.lexical > 0
+        or candidate.dense >= 0.25
+        or bool({"tag", "path", "relation"} & set(candidate.reasons))
+    } | db_user_ids | extra_ids
+    top_score = max(
+        (score for score, item in scored if item.id in relevant_ids),
+        default=0.0,
+    )
     critical_hit = any(
-        score >= 0.15 and item.type in {
+        score >= 0.15 and item.id in relevant_ids and item.type in {
             MemoryType.INVARIANT, MemoryType.CONSTRAINT, MemoryType.CONTRACT,
         }
         for score, item in scored[:5]
     )
-    stale_hit = bool(stale_items)
+    stale_hit = any(item.id in relevant_ids for item in stale_items)
     if (not scored and not stale_items) or (
         top_score < threshold and not critical_hit and not path_matched and not stale_hit
     ):

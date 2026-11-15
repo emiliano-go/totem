@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.11.0 (2026-11-15)
+
+### Quality hardening
+
+- **Evidence repair.** `memory_evidence_refresh` re-hashes changed files,
+  relocates symbols, reports orphaned paths, and can repair a unique trailing
+  path match without silently deleting evidence.
+- **Quality instruments.** Reports now split operational, derived, curated,
+  and verified tiers, break stale evidence down by class and tier, report
+  digest staleness, entity quality, and rollup source drift.
+- **Rollup admission.** Temporary worktrees, caches, build output, and
+  benchmark copies are excluded. Module summaries carry member files and a
+  source hash; a changed member makes the summary stale.
+- **Entity canonicalization.** Paths create only file entities, symbols come
+  from the file TLDR symbol list, and path-valued symbol entities are merged.
+- **Context abstention.** File-state records no longer flood engineering
+  context, and irrelevant dense matches no longer defeat abstention.
+- **Lifecycle capture.** Session summaries store tool sequences; bash test
+  runs are recorded as checks on the session summary.
+- **Benchmark.** `totem benchmark` scores title-level retrieval, MRR, and
+  abstention against a JSON case file. The TrustSight corpus scores 1.0
+  recall@5, 1.0 MRR, and 1.0 abstention on 12 cases.
+- **Consolidation safety.** Operational file-state records are excluded from
+  near-duplicate consolidation.
+
 ## 0.10.1 (2026-11-15)
 
 ### Fixes

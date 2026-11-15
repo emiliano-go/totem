@@ -75,6 +75,20 @@ def test_file_state_is_excluded_from_generic_search(fresh_db):
     assert [hit["id"] for hit in hits] == [created["id"]]
 
 
+def test_context_excludes_file_state_by_default(fresh_db):
+    from totem_mcp.context import engineering_context
+
+    root = Path(project_root(fresh_db))
+    _write(root, "src/queue.py", '"""Queue helpers."""\n')
+    memory_file_context(fresh_db, "src/queue.py")
+    hidden = engineering_context(fresh_db, tags=["queue"], task="queue helpers")
+    assert hidden["abstained"] is True
+    shown = engineering_context(
+        fresh_db, tags=["queue"], task="queue helpers", include_file_state=True,
+    )
+    assert shown["abstained"] is False
+
+
 def test_session_summary_updates_one_record(fresh_db):
     first = memory_session_summary(
         fresh_db, "session-1", "Implemented the queue retry behavior.",

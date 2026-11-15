@@ -696,6 +696,7 @@ def memory_quality(conn: turso.Connection) -> dict:
     items = get_all_items(conn)
     file_state = [item for item in items if _is_file_state_item(item)]
     durable = [item for item in items if not _is_file_state_item(item)]
+    tiers = Counter(_provenance_tier(item) for item in items)
     conflict_total = conn.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
     conflict_open = conn.execute(
         "SELECT COUNT(*) FROM conflicts WHERE resolved_at IS NULL"
@@ -707,6 +708,8 @@ def memory_quality(conn: turso.Connection) -> dict:
     total_evidence = 0
     stale_evidence = 0
     stale_items: set[str] = set()
+    stale_classes: Counter = Counter()
+    stale_tiers: Counter = Counter()
     cache: dict = {}
     root = project_root(conn)
     for item in items:
@@ -729,6 +732,10 @@ def memory_quality(conn: turso.Connection) -> dict:
             if stale:
                 stale_evidence += 1
                 stale_items.add(item.id)
+                stale_classes[_memory_class(
+                    item.type.value, item.metadata, file_state=_is_file_state_item(item),
+                )] += 1
+                stale_tiers[_provenance_tier(item)] += 1
 
     def count(table: str) -> int:
         row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
@@ -739,12 +746,51 @@ def memory_quality(conn: turso.Connection) -> dict:
         key=lambda item: (item.importance, item.updated_at),
         reverse=True,
     )[:5]
+    entity_kinds = Counter(
+        row[0] for row in conn.execute(
+            "SELECT kind FROM memory_entities"
+        ).fetchall()
+    )
+    path_symbols = conn.execute(
+        "SELECT COUNT(*) FROM memory_entities s "
+        "WHERE s.kind = 'symbol' AND EXISTS ("
+        "SELECT 1 FROM memory_entities f "
+        "WHERE f.kind = 'file' AND f.canonical = s.canonical)"
+    ).fetchone()[0]
+    modules = [
+        item for item in durable
+        if (item.metadata or {}).get("kind") == "module_summary"
+    ]
+    excluded_modules = sum(
+        1 for item in modules
+        if _is_temp_path(str((item.metadata or {}).get("pathPrefix") or ""))
+    )
+    stale_modules = 0
+    for module in modules:
+        prefix = str((module.metadata or {}).get("pathPrefix") or "")
+        tracked = set((module.metadata or {}).get("files") or [])
+        members = [
+            item for item in file_state
+            if (
+                str((item.metadata or {}).get("path") or "") in tracked
+                if tracked else
+                _under_prefix(str((item.metadata or {}).get("path") or ""), prefix)
+            )
+            and not _is_temp_path(str((item.metadata or {}).get("path") or ""))
+        ]
+        expected = (module.metadata or {}).get("sourceHash")
+        if expected and _rollup_source_hash(members) != expected:
+            stale_modules += 1
     return {
         "total": len(items),
         "byType": dict(Counter(item.type.value for item in items)),
         "byClass": dict(Counter(
-            _memory_class(item.type.value, item.metadata) for item in items
+            _memory_class(
+                item.type.value, item.metadata,
+                file_state=_is_file_state_item(item),
+            ) for item in items
         )),
+        "byTier": dict(tiers),
         "fileState": len(file_state),
         "durable": len(durable),
         "signalRatio": round(len(durable) / len(items), 3) if items else 0.0,
@@ -758,6 +804,8 @@ def memory_quality(conn: turso.Connection) -> dict:
             "total": total_evidence,
             "items": len(stale_items),
             "ratio": round(stale_evidence / total_evidence, 3) if total_evidence else 0.0,
+            "byClass": dict(stale_classes),
+            "byTier": dict(stale_tiers),
         },
         "conflicts": {
             "open": int(conflict_open),
@@ -770,10 +818,31 @@ def memory_quality(conn: turso.Connection) -> dict:
         "feedback": count("memory_feedback"),
         "embeddings": count("memory_embeddings"),
         "entities": count("memory_entities"),
+        "entityQuality": {
+            "byKind": dict(entity_kinds),
+            "pathSymbols": int(path_symbols),
+            "links": count("memory_entity_links"),
+        },
+        "rollupQuality": {
+            "modules": len(modules),
+            "excludedPaths": excluded_modules,
+            "stale": stale_modules,
+        },
         "digest": [
-            {"type": item.type.value, "title": item.title}
+            {
+                "id": item.id,
+                "type": item.type.value,
+                "title": item.title,
+                "class": _memory_class(
+                    item.type.value, item.metadata,
+                    file_state=_is_file_state_item(item),
+                ),
+                "tier": _provenance_tier(item),
+                "stale": item.id in stale_items,
+            }
             for item in digest
         ],
+        "digestStale": sum(1 for item in digest if item.id in stale_items),
     }
 
 
@@ -815,6 +884,152 @@ def memory_revalidate(
                 source="memory_revalidate", actor=actor,
             )
     return {"dry_run": dry_run, "voided": voided, "count": len(voided)}
+
+
+@atomic
+def memory_evidence_refresh(
+    conn: turso.Connection,
+    ids: list[str] | None = None,
+    dry_run: bool = True,
+    repair_orphans: bool = False,
+    actor: str | None = None,
+) -> dict:
+    """Re-hash evidence, relocate symbols, and report orphaned paths."""
+    root = project_root(conn)
+    all_items = get_all_items(conn)
+    wanted = set(ids or [])
+    items = [item for item in all_items if not wanted or item.id in wanted]
+    refreshed: list[str] = []
+    orphaned: list[dict] = []
+    unchanged = 0
+    for item in items:
+        if _is_file_state_item(item):
+            rel = str((item.metadata or {}).get("path") or "")
+            if not rel or not (Path(root) / rel).exists():
+                orphaned.append({"id": item.id, "title": item.title, "path": rel})
+                continue
+            if not dry_run:
+                result = memory_file_context(conn, rel, refresh=True)
+                if result.get("changed") or result.get("created"):
+                    refreshed.append(item.id)
+            else:
+                text = (Path(root) / rel).read_text(
+                    encoding="utf-8", errors="replace",
+                )
+                if hash_content(text) == (item.metadata or {}).get("blobHash"):
+                    unchanged += 1
+                else:
+                    refreshed.append(item.id)
+            continue
+        changed = False
+        updated_evidence: list[Evidence] = []
+        for evidence in item.evidence:
+            path = Path(evidence.path)
+            try:
+                path = contained_path(path, root)
+            except EvidencePathError:
+                orphaned.append({
+                    "id": item.id, "title": item.title, "path": evidence.path,
+                })
+                updated_evidence.append(evidence)
+                continue
+            if not path.exists():
+                replacement = _find_evidence_replacement(root, evidence.path)
+                orphaned.append({
+                    "id": item.id, "title": item.title, "path": evidence.path,
+                    **({"replacement": str(replacement)} if replacement else {}),
+                })
+                if replacement is not None and not dry_run and repair_orphans:
+                    replacement_text = replacement.read_text(
+                        encoding="utf-8", errors="replace",
+                    )
+                    blob_hash = hash_content(replacement_text)
+                    updated_evidence.append(Evidence(
+                        path=str(replacement.relative_to(root)),
+                        startLine=1,
+                        endLine=max(1, replacement_text.count("\n") + 1),
+                        contentHash=blob_hash,
+                        kind=evidence.kind,
+                        capturedAt=_now(),
+                        blobHash=blob_hash,
+                        symbol=None,
+                        symbolHash=None,
+                    ))
+                    changed = True
+                else:
+                    updated_evidence.append(evidence)
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            blob_hash = hash_content(text)
+            symbol_hash = (
+                hash_symbol(path, evidence.symbol, text)
+                if evidence.symbol else None
+            )
+            if blob_hash == evidence.blob_hash and (
+                evidence.symbol is None
+                or symbol_hash == evidence.symbol_hash
+            ):
+                unchanged += 1
+                updated_evidence.append(evidence)
+                continue
+            changed = True
+            updated_evidence.append(Evidence(
+                path=evidence.path,
+                startLine=1,
+                endLine=max(1, text.count("\n") + 1),
+                contentHash=blob_hash,
+                kind=evidence.kind,
+                capturedAt=_now(),
+                blobHash=blob_hash,
+                symbol=evidence.symbol,
+                symbolHash=symbol_hash,
+            ))
+        if changed:
+            refreshed.append(item.id)
+            if not dry_run:
+                update_item_row(
+                    conn, item.id,
+                    {
+                        "evidence": json.dumps(
+                            [evidence.model_dump(by_alias=True)
+                             for evidence in updated_evidence]
+                        ),
+                        "verified_at": None,
+                        "verified_commit": None,
+                        "updated_at": _now(),
+                    },
+                )
+                insert_history(
+                    conn, item.id, "evidence_refreshed",
+                    field="evidence", reason="source content changed",
+                    source="memory_evidence_refresh", actor=actor,
+                )
+    return {
+        "dry_run": dry_run,
+        "refreshed": refreshed,
+        "refreshedCount": len(refreshed),
+        "unchanged": unchanged,
+        "orphaned": orphaned,
+        "orphanedCount": len(orphaned),
+    }
+
+
+def _find_evidence_replacement(root: str | Path, path: str) -> Path | None:
+    """Find one non-temporary file with the same trailing path suffix."""
+    source = Path(path)
+    suffix_parts = source.parts[-2:]
+    suffix = "/".join(suffix_parts)
+    matches = [
+        candidate for candidate in Path(root).rglob(source.name)
+        if candidate.is_file()
+        and not _is_temp_path(candidate.as_posix())
+        and not any(
+            part in {"site-packages", ".cache", "_test-env", "packaging"}
+            for part in candidate.parts
+        )
+        and candidate.as_posix().endswith(suffix)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 @atomic
@@ -1288,8 +1503,34 @@ def _is_file_state_item(item) -> bool:
     )
 
 
-def _memory_class(type_value: str, metadata: dict | None = None) -> str:
+_EXCLUDED_ROLLUP_PARTS = {
+    ".git", ".pr-worktrees", "worktrees", "node_modules", ".venv", "venv",
+    "dist", "build", "target", ".next", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", "coverage", ".benchmarks",
+}
+
+
+def _is_temp_path(path: str) -> bool:
+    parts = Path(str(path)).parts
+    return any(part in _EXCLUDED_ROLLUP_PARTS for part in parts)
+
+
+def _under_prefix(path: str, prefix: str) -> bool:
+    prefix = str(prefix or "").strip("/")
+    if prefix in ("", "."):
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _memory_class(
+    type_value: str,
+    metadata: dict | None = None,
+    *,
+    file_state: bool = False,
+) -> str:
     """One of operational, episodic, procedural, core, semantic."""
+    if file_state:
+        return "operational"
     metadata = metadata or {}
     explicit = str(metadata.get("memoryClass") or "").strip().lower()
     if explicit in {"operational", "episodic", "procedural", "core", "semantic"}:
@@ -1306,6 +1547,23 @@ def _memory_class(type_value: str, metadata: dict | None = None) -> str:
     return "semantic"
 
 
+def _provenance_tier(item: MemoryItem) -> str:
+    """One of operational, derived, curated, verified."""
+    metadata = item.metadata or {}
+    if _is_file_state_item(item):
+        return "operational"
+    if item.verified_at:
+        return "verified"
+    explicit = str(metadata.get("provenanceTier") or "").strip().lower()
+    if explicit in {"operational", "derived", "curated", "verified"}:
+        return explicit
+    if metadata.get("generated") is True or metadata.get("kind") in (
+        "module_summary", "project_summary", "session_summary",
+    ):
+        return "derived"
+    return "curated"
+
+
 def _entity_candidates(metadata: dict | None) -> list[tuple[str, str]]:
     metadata = metadata or {}
     found: list[tuple[str, str]] = []
@@ -1313,8 +1571,12 @@ def _entity_candidates(metadata: dict | None) -> list[tuple[str, str]]:
     if path:
         found.append(("file", str(path)))
     subject = metadata.get("subject")
-    if subject:
+    if subject and metadata.get("fileKind") != "file_tldr":
         found.append(("symbol", str(subject)))
+    for symbol in metadata.get("symbols") or []:
+        name = symbol.get("name") if isinstance(symbol, dict) else None
+        if name:
+            found.append(("symbol", str(name)))
     component = metadata.get("component")
     if component:
         found.append(("component", str(component)))
@@ -1413,6 +1675,7 @@ def memory_consolidate(
     items = [
         item for item in get_all_items(conn)
         if item.status.value in ("active", "potentially_stale")
+        and not _is_file_state_item(item)
     ]
     if len(items) < 2:
         return {"dryRun": not apply, "clusters": [], "count": 0}
@@ -1684,6 +1947,7 @@ def memory_session_summary(
     session_id: str,
     summary: str,
     files: list[str] | None = None,
+    tools: list[str] | None = None,
     commit: str | None = None,
     title: str | None = None,
     reason: str | None = None,
@@ -1702,8 +1966,11 @@ def memory_session_summary(
         "observation": text,
         "kind": "session_summary",
         "memoryClass": "episodic",
+        "generated": True,
+        "provenanceTier": "derived",
         "sessionId": session_id,
         "files": paths,
+        "tools": list(dict.fromkeys(str(tool) for tool in (tools or [])))[:40],
         **({"commit": commit} if commit else {}),
         **({"reason": reason} if reason else {}),
     }
@@ -1807,6 +2074,7 @@ def memory_workflow(
     summary: str | None = None,
     scope: str = "project",
     asserted_by: str = "agent",
+    provenance_tier: str = "curated",
 ) -> dict:
     """Create or update one reusable procedure."""
     clean_steps = [str(step).strip() for step in steps if str(step).strip()]
@@ -1816,6 +2084,8 @@ def memory_workflow(
     metadata = {
         "kind": "workflow",
         "memoryClass": "procedural",
+        "generated": provenance_tier == "derived",
+        "provenanceTier": provenance_tier,
         "name": name.strip(),
         "component": f"workflow:{name.strip()}",
         "responsibility": text[:500],
@@ -1948,7 +2218,10 @@ def memory_graph(
                 "id": item.id,
                 "type": item.type.value,
                 "title": item.title,
-                "memoryClass": _memory_class(item.type.value, item.metadata),
+                "memoryClass": _memory_class(
+                    item.type.value, item.metadata,
+                    file_state=_is_file_state_item(item),
+                ),
             })
     relations = [
         relation for relation in get_all_relations(conn)
@@ -1969,13 +2242,17 @@ def memory_rollup(
     files = [
         item for item in items
         if _is_file_state_item(item)
-        and str((item.metadata or {}).get("path") or "").startswith(path_prefix)
+        and _under_prefix(str((item.metadata or {}).get("path") or ""), path_prefix)
+        and not _is_temp_path(str((item.metadata or {}).get("path") or ""))
     ]
     groups: dict[str, list] = {}
     for item in files:
         rel = str(item.metadata.get("path"))
         parent = str(Path(rel).parent)
-        groups.setdefault("." if parent in ("", ".") else parent, []).append(item)
+        prefix = "." if parent in ("", ".") else parent
+        if _is_temp_path(prefix):
+            continue
+        groups.setdefault(prefix, []).append(item)
     proposed = []
     for prefix, members in sorted(groups.items()):
         if len(members) < min_files:
@@ -1985,25 +2262,66 @@ def memory_rollup(
             statement = item.statement.split(". ")[0].strip()
             summaries.append(f"{Path(item.metadata['path']).name}: {statement}")
         text = "; ".join(summaries)[:2000]
-        proposed.append({"prefix": prefix, "fileCount": len(members), "summary": text})
+        proposed.append({
+            "prefix": prefix,
+            "fileCount": len(members),
+            "summary": text,
+            "sourceHash": _rollup_source_hash(members),
+            "files": sorted(str(item.metadata["path"]) for item in members),
+        })
+    removed: list[str] = []
     if apply:
+        for item in items:
+            if (item.metadata or {}).get("kind") != "module_summary":
+                continue
+            prefix = str((item.metadata or {}).get("pathPrefix") or "")
+            if _is_temp_path(prefix):
+                soft_delete(conn, item.id)
+                insert_history(
+                    conn, item.id, "rollup_removed",
+                    reason="temporary or excluded path",
+                    source="memory_rollup",
+                )
+                removed.append(item.id)
         for proposal in proposed:
             _upsert_rollup(
                 conn, proposal["prefix"], "module_summary",
                 f"Module: {proposal['prefix']}",
                 proposal["summary"],
-                {"pathPrefix": proposal["prefix"], "fileCount": proposal["fileCount"]},
+                {
+                    "pathPrefix": proposal["prefix"],
+                    "fileCount": proposal["fileCount"],
+                    "sourceHash": proposal["sourceHash"],
+                    "files": proposal["files"],
+                },
             )
         project_text = "; ".join(
             f"{proposal['prefix']} ({proposal['fileCount']} files)"
             for proposal in proposed[:20]
         ) or "No module summaries yet."
+        project_hash = hash_content(
+            "\n".join(proposal["sourceHash"] for proposal in proposed)
+        )
         _upsert_rollup(
             conn, "", "project_summary", "Project memory map",
             project_text,
-            {"pathPrefix": "", "moduleCount": len(proposed)},
+            {
+                "pathPrefix": "", "moduleCount": len(proposed),
+                "sourceHash": project_hash,
+            },
         )
-    return {"apply": apply, "modules": proposed, "count": len(proposed)}
+    return {
+        "apply": apply, "modules": proposed, "count": len(proposed),
+        "removed": removed,
+    }
+
+
+def _rollup_source_hash(members: list) -> str:
+    payload = "\n".join(sorted(
+        f"{item.metadata.get('path')}:{item.metadata.get('blobHash')}"
+        for item in members
+    ))
+    return hash_content(payload)
 
 
 def _upsert_rollup(
@@ -2017,6 +2335,8 @@ def _upsert_rollup(
     meta = {
         "kind": kind,
         "memoryClass": "semantic",
+        "generated": True,
+        "provenanceTier": "derived",
         "subject": prefix or "project",
         "component": f"rollup:{prefix or 'project'}",
         "responsibility": statement[:500],
@@ -2074,7 +2394,10 @@ def memory_heat(conn: turso.Connection, limit: int = 20) -> dict:
         scored.append({
             "id": item.id,
             "title": item.title,
-            "memoryClass": _memory_class(item.type.value, item.metadata),
+            "memoryClass": _memory_class(
+                item.type.value, item.metadata,
+                file_state=_is_file_state_item(item),
+            ),
             "heat": round(score, 3),
             "ageDays": round(age_days, 1),
         })
@@ -2116,7 +2439,10 @@ def memory_decay(
     for item in get_all_items(conn):
         if item.importance >= min_importance:
             continue
-        if _memory_class(item.type.value, item.metadata) not in ("operational", "episodic"):
+        if _memory_class(
+            item.type.value, item.metadata,
+            file_state=_is_file_state_item(item),
+        ) not in ("operational", "episodic"):
             continue
         try:
             updated = datetime.fromisoformat(item.updated_at.replace("Z", "+00:00"))
@@ -2176,6 +2502,7 @@ def memory_induce_workflow(
         verification=["Relevant tests pass", "Audit remains clean"],
         summary=proposed["summary"],
         tags=[f"session:{session_id}"],
+        provenance_tier="derived",
     )
     return {"apply": True, **created}
 
@@ -2184,6 +2511,8 @@ def memory_maintenance(conn: turso.Connection, apply: bool = False) -> dict:
     """Run the background consolidation cycle in one call."""
     return {
         "entities": memory_backfill_entities(conn),
+        "dedupe": memory_dedupe_entities(conn),
+        "evidence": memory_evidence_refresh(conn, dry_run=not apply),
         "revalidate": memory_revalidate(conn, dry_run=not apply),
         "rollup": memory_rollup(conn, apply=apply),
         "decay": memory_decay(conn, dry_run=not apply),
@@ -2200,6 +2529,34 @@ def memory_backfill_entities(conn: turso.Connection) -> dict:
             conn, item.id, {**(item.metadata or {}), "tags": item.tags},
         ))
     return {"links": linked, "entities": len(get_all_entities(conn))}
+
+
+@atomic
+def memory_dedupe_entities(conn: turso.Connection) -> dict:
+    """Merge path-valued symbol entities into their file entity."""
+    rows = conn.execute(
+        "SELECT s.id, f.id FROM memory_entities s "
+        "JOIN memory_entities f ON f.kind = 'file' AND f.canonical = s.canonical "
+        "WHERE s.kind = 'symbol'"
+    ).fetchall()
+    merged = 0
+    for symbol_id, file_id in rows:
+        links = conn.execute(
+            "SELECT item_id, relation FROM memory_entity_links WHERE entity_id = ?",
+            (symbol_id,),
+        ).fetchall()
+        for item_id, relation in links:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_entity_links "
+                "(item_id, entity_id, relation, created_at) VALUES (?, ?, ?, ?)",
+                (item_id, file_id, relation, _now()),
+            )
+        conn.execute(
+            "DELETE FROM memory_entity_links WHERE entity_id = ?", (symbol_id,)
+        )
+        conn.execute("DELETE FROM memory_entities WHERE id = ?", (symbol_id,))
+        merged += 1
+    return {"merged": merged, "remaining": len(get_all_entities(conn))}
 
 
 def _clean_summary(text: str) -> str:

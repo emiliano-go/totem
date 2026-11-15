@@ -39,6 +39,7 @@ from .tools import (
     memory_decay,
     memory_delete,
     memory_export,
+    memory_evidence_refresh,
     memory_gc,
     memory_get,
     memory_import,
@@ -520,6 +521,28 @@ def memory_revalidate_tool(
 
 
 @mcp.tool()
+def memory_evidence_refresh_tool(
+    ids: list[str] | None = None,
+    dry_run: bool = True,
+    repair_orphans: bool = False,
+    project: str | None = None,
+    actor: str | None = None,
+) -> str:
+    """Re-hash evidence, relocate symbols, and report orphaned paths."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(
+                memory_evidence_refresh(
+                    conn, ids=ids, dry_run=dry_run,
+                    repair_orphans=repair_orphans, actor=actor,
+                ),
+                indent=2,
+            )
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
 def memory_gc_tool(
     retention_days: int = 90,
     dry_run: bool = True,
@@ -673,7 +696,7 @@ def memory_search_tool(
         limit: Maximum results (default 20)
         as_of: Evaluate temporal validity at this ISO timestamp
         include_expired: Include memories outside their validity window
-        include_file_state: Include file-state TLDRs in generic search results
+        include_file_state: Include operational file-state TLDRs (default false)
         project: Optional project root path. Auto-detected from git root if omitted.
     """
     with db_connection(project=project) as conn:
@@ -791,6 +814,7 @@ def engineering_context_tool(
     max_item_chars: int | None = None,
     as_of: str | None = None,
     include_expired: bool = False,
+    include_file_state: bool = False,
     project: str | None = None,
 ) -> str:
     """Assemble engineering context with output ordering.
@@ -808,6 +832,7 @@ def engineering_context_tool(
         max_item_chars: Cap a single item so it cannot dominate the budget
         as_of: Evaluate temporal validity at this ISO timestamp
         include_expired: Include memories outside their validity window
+        include_file_state: Include operational file-state TLDRs (default false)
         paths: Filter items whose evidence matches these file paths
         project: Optional project root path. Auto-detected from git root if omitted.
     """
@@ -825,6 +850,7 @@ def engineering_context_tool(
                 max_item_chars=max_item_chars,
                 as_of=as_of,
                 include_expired=include_expired,
+                include_file_state=include_file_state,
             )
             return json.dumps(result, indent=2)
         except Exception as e:
@@ -907,6 +933,7 @@ def memory_session_summary_tool(
     session_id: str,
     summary: str,
     files: list[str] | None = None,
+    tools: list[str] | None = None,
     commit: str | None = None,
     title: str | None = None,
     reason: str | None = None,
@@ -918,6 +945,7 @@ def memory_session_summary_tool(
         session_id: Stable session id; repeat calls update the same record
         summary: One or two sentences describing what changed and why
         files: Changed file paths
+        tools: Tool names used in the session
         commit: Git commit, defaults to HEAD
         title: Optional title override
         reason: Optional reason for the update
@@ -928,7 +956,8 @@ def memory_session_summary_tool(
             return json.dumps(
                 memory_session_summary(
                     conn, session_id=session_id, summary=summary,
-                    files=files, commit=commit, title=title, reason=reason,
+                    files=files, tools=tools, commit=commit, title=title,
+                    reason=reason,
                 ),
                 indent=2,
             )

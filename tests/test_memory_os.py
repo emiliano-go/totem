@@ -1,17 +1,20 @@
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from totem_mcp.db import connect, init_db
+from totem_mcp.db import connect, init_db, link_entity, upsert_entity
 from totem_mcp.paths import project_root
 from totem_mcp.markdown import export_markdown, import_markdown
 from totem_mcp.tools import (
     memory_create,
     memory_decay,
+    memory_dedupe_entities,
     memory_file_context,
     memory_graph,
     memory_heat,
     memory_induce_workflow,
     memory_maintenance,
+    memory_quality,
     memory_profile,
     memory_relate,
     memory_relations,
@@ -60,6 +63,24 @@ def test_file_entities_and_graph(fresh_db):
     assert any(entry["id"] == item["id"] for entry in graph["items"])
 
 
+def test_dedupe_merges_path_symbol_entities(fresh_db):
+    root = Path(project_root(fresh_db))
+    _write(root, "src/queue.py", '"""Queue helpers."""\n')
+    item = memory_file_context(fresh_db, "src/queue.py")
+    file_id = upsert_entity(fresh_db, "file", "src/queue.py")
+    symbol_id = upsert_entity(fresh_db, "symbol", "src/queue.py")
+    link_entity(fresh_db, item["id"], symbol_id)
+    result = memory_dedupe_entities(fresh_db)
+    assert result["merged"] >= 1
+    assert fresh_db.execute(
+        "SELECT COUNT(*) FROM memory_entities WHERE id = ?", (symbol_id,)
+    ).fetchone()[0] == 0
+    assert fresh_db.execute(
+        "SELECT COUNT(*) FROM memory_entity_links WHERE entity_id = ?",
+        (file_id,),
+    ).fetchone()[0] >= 1
+
+
 def test_rollup_builds_module_summary(fresh_db):
     root = Path(project_root(fresh_db))
     _write(root, "src/a.py", '"""Alpha."""\n')
@@ -74,6 +95,27 @@ def test_rollup_builds_module_summary(fresh_db):
         "SELECT title FROM memory_items WHERE json_extract(metadata, '$.kind') = 'module_summary'"
     ).fetchone()
     assert row and row[0] == "Module: src"
+
+
+def test_rollup_excludes_temporary_paths_and_tracks_source(fresh_db):
+    root = Path(project_root(fresh_db))
+    _write(root, "src/a.py", '"""Alpha."""\n')
+    _write(root, "src/b.py", '"""Beta."""\n')
+    _write(root, ".pr-worktrees/tmp/a.py", '"""Temp."""\n')
+    _write(root, ".pr-worktrees/tmp/b.py", '"""Temp two."""\n')
+    for path in ("src/a.py", "src/b.py", ".pr-worktrees/tmp/a.py", ".pr-worktrees/tmp/b.py"):
+        memory_file_context(fresh_db, path)
+    preview = memory_rollup(fresh_db, apply=False)
+    assert [entry["prefix"] for entry in preview["modules"]] == ["src"]
+    memory_rollup(fresh_db, apply=True)
+    module = fresh_db.execute(
+        "SELECT metadata FROM memory_items "
+        "WHERE json_extract(metadata, '$.kind') = 'module_summary'"
+    ).fetchone()
+    assert json.loads(module[0])["pathPrefix"] == "src"
+    _write(root, "src/a.py", '"""Alpha changed."""\n')
+    memory_file_context(fresh_db, "src/a.py", refresh=True)
+    assert memory_quality(fresh_db)["rollupQuality"]["stale"] == 1
 
 
 def test_heat_and_decay_use_operational_state(fresh_db):
@@ -129,7 +171,10 @@ def test_relations_are_bi_temporal(fresh_db):
 
 def test_maintenance_runs_all_cycles(fresh_db):
     result = memory_maintenance(fresh_db, apply=False)
-    assert set(result) == {"entities", "revalidate", "rollup", "decay", "consolidate"}
+    assert set(result) == {
+        "entities", "dedupe", "evidence", "revalidate", "rollup", "decay",
+        "consolidate",
+    }
 
 
 def test_markdown_roundtrip(fresh_db, tmp_path):
