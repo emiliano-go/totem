@@ -2,10 +2,45 @@
 
 from __future__ import annotations
 
+import re
+
 import turso
 
 from .db import get_overlapping_items, find_same_title_different_statement, insert_conflict
 from .models import Conflict, MemoryItem, MemoryType
+
+
+def _subject(item: MemoryItem) -> str:
+    metadata = item.metadata or {}
+    return str(metadata.get("subject") or metadata.get("component") or "").strip().lower()
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z0-9_]{4,}", text.lower())}
+
+
+def _claims_oppose(a: MemoryItem, b: MemoryItem) -> bool:
+    """True when two claims are close enough to be about the same assertion."""
+    first, second = _words(a.statement), _words(b.statement)
+    if not first or not second:
+        return False
+    jaccard = len(first & second) / len(first | second)
+    if jaccard < 0.45:
+        return False
+    negations = {"not", "never", "cannot", "without", "avoid", "disable", "forbid"}
+    a_negates = bool(first & negations)
+    b_negates = bool(second & negations)
+    if a_negates != b_negates:
+        return True
+    a_numbers = set(re.findall(r"\b\d+\b", a.statement))
+    b_numbers = set(re.findall(r"\b\d+\b", b.statement))
+    return bool(a_numbers and b_numbers and a_numbers != b_numbers)
+
+
+def _same_claims(a: MemoryItem, b: MemoryItem) -> bool:
+    """Overlapping evidence only conflicts when the claim subject also matches."""
+    left, right = _subject(a), _subject(b)
+    return bool(left and right and left == right) and _claims_oppose(a, b)
 
 
 def detect_conflicts(
@@ -40,6 +75,8 @@ def detect_conflicts(
                 if existing_item.id == new_item.id:
                     continue
                 if existing_item.statement.strip() == new_item.statement.strip():
+                    continue
+                if not _same_claims(new_item, existing_item):
                     continue
 
                 conflict = Conflict(

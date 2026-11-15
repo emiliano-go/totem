@@ -10,6 +10,7 @@ from .context import engineering_context
 from .db import db_connection
 from .tools import (
     memory_audit,
+    memory_quality,
     memory_check_record,
     memory_consolidate,
     memory_create,
@@ -246,6 +247,14 @@ def audit(ctx: click.Context) -> None:
         click.echo(json.dumps(result, indent=2))
         if not result["ok"]:
             raise click.exceptions.Exit(1)
+
+
+@cli.command("quality")
+@click.pass_context
+def quality(ctx: click.Context) -> None:
+    """Report memory signal, provenance, stale evidence, and conflicts."""
+    with db_connection(project=ctx.obj.get("project")) as conn:
+        click.echo(json.dumps(memory_quality(conn), indent=2))
 
 
 @cli.command("feedback")

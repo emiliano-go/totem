@@ -17,6 +17,7 @@ from .eval_bench import auto_cases, evaluate, gate, load_cases
 from .hardening import harden_registry, tool_manifest
 from .tools import (
     memory_audit,
+    memory_quality,
     memory_check_record,
     memory_consolidate,
     memory_create,
@@ -395,6 +396,16 @@ def memory_audit_tool(project: str | None = None) -> str:
     with db_connection(project=project) as conn:
         try:
             return json.dumps(memory_audit(conn), indent=2)
+        except Exception as e:
+            return error_response(e)
+
+
+@mcp.tool()
+def memory_quality_tool(project: str | None = None) -> str:
+    """Report signal ratio, provenance, stale evidence, conflicts, and digest quality."""
+    with db_connection(project=project) as conn:
+        try:
+            return json.dumps(memory_quality(conn), indent=2)
         except Exception as e:
             return error_response(e)
 

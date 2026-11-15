@@ -1559,6 +1559,7 @@ RELATION_KINDS = (
     "verified_by",
     "refines",
     "depends_on",
+    "touches",
 )
 
 

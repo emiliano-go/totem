@@ -92,3 +92,20 @@ def test_session_summary_updates_one_record(fresh_db):
     ]
     assert len(summaries) == 1
     assert "Documented" in summaries[0].statement
+
+
+def test_session_summary_links_touched_files(fresh_db):
+    root = Path(project_root(fresh_db))
+    _write(root, "src/queue.py", '"""Queue helpers."""\n\ndef retry(n: int) -> int:\n    return n\n')
+    file_item = memory_file_context(fresh_db, "src/queue.py")
+    session = memory_session_summary(
+        fresh_db, "session-link", "Changed the queue retry behavior.",
+        files=["src/queue.py"],
+    )
+    from totem_mcp.tools import memory_relations
+
+    relations = memory_relations(fresh_db, session["id"])
+    assert any(
+        relation["kind"] == "touches" and relation["to_id"] == file_item["id"]
+        for relation in relations
+    )

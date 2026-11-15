@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.9.3 (2026-11-15)
+
+### Read-side file memory
+
+- **Cached reads.** A whole-file read now asks for the file-state TLDR first.
+  When the content hash matches, the agent receives the TLDR, language, and
+  symbol outline instead of the full body; `force: true` reads the body.
+- **Session links.** Session summaries link to the file-state records they
+  touched through a `touches` relation, so path activation can find the session
+  that explains a change.
+- **Quality report.** `memory_quality` and `totem quality` report signal ratio,
+  provenance coverage, stale evidence, conflicts, duplicate titles, relations,
+  checks, feedback, embeddings, and digest composition.
+- **Conflict precision.** Overlapping evidence alone no longer creates a
+  conflict. The claims must share a subject and oppose each other through
+  negation, a changed number, or high statement similarity.
 
 ## 0.9.2 (2026-11-14)
 

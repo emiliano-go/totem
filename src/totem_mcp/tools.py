@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import subprocess
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -680,6 +681,88 @@ def memory_check_record(
 def memory_audit(conn: turso.Connection) -> dict:
     """Verify the history hash chain and each item's recorded state digest."""
     return verify_history(conn)
+
+
+def memory_quality(conn: turso.Connection) -> dict:
+    """Report whether the corpus is durable knowledge or activity noise."""
+    items = get_all_items(conn)
+    file_state = [item for item in items if _is_file_state_item(item)]
+    durable = [item for item in items if not _is_file_state_item(item)]
+    conflict_total = conn.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
+    conflict_open = conn.execute(
+        "SELECT COUNT(*) FROM conflicts WHERE resolved_at IS NULL"
+    ).fetchone()[0]
+    duplicate_titles = sum(
+        count - 1 for count in Counter(item.title for item in items).values() if count > 1
+    )
+
+    total_evidence = 0
+    stale_evidence = 0
+    stale_items: set[str] = set()
+    cache: dict = {}
+    root = project_root(conn)
+    for item in items:
+        for evidence in item.evidence:
+            total_evidence += 1
+            try:
+                stale = check_staleness(
+                    Path(evidence.path),
+                    evidence.start_line,
+                    evidence.end_line,
+                    evidence.content_hash,
+                    symbol=evidence.symbol,
+                    blob_hash=evidence.blob_hash,
+                    symbol_hash=evidence.symbol_hash,
+                    root=root,
+                    cache=cache,
+                )
+            except Exception:
+                stale = True
+            if stale:
+                stale_evidence += 1
+                stale_items.add(item.id)
+
+    def count(table: str) -> int:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0]) if row else 0
+
+    digest = sorted(
+        durable,
+        key=lambda item: (item.importance, item.updated_at),
+        reverse=True,
+    )[:5]
+    return {
+        "total": len(items),
+        "byType": dict(Counter(item.type.value for item in items)),
+        "fileState": len(file_state),
+        "durable": len(durable),
+        "signalRatio": round(len(durable) / len(items), 3) if items else 0.0,
+        "provenance": {
+            "assertedBy": sum(1 for item in items if item.asserted_by),
+            "scope": sum(1 for item in items if item.scope),
+            "withEvidence": sum(1 for item in items if item.evidence),
+        },
+        "staleEvidence": {
+            "evidence": stale_evidence,
+            "total": total_evidence,
+            "items": len(stale_items),
+            "ratio": round(stale_evidence / total_evidence, 3) if total_evidence else 0.0,
+        },
+        "conflicts": {
+            "open": int(conflict_open),
+            "resolved": int(conflict_total - conflict_open),
+            "total": int(conflict_total),
+        },
+        "duplicateTitles": duplicate_titles,
+        "relations": count("memory_relations"),
+        "checks": count("memory_checks"),
+        "feedback": count("memory_feedback"),
+        "embeddings": count("memory_embeddings"),
+        "digest": [
+            {"type": item.type.value, "title": item.title}
+            for item in digest
+        ],
+    }
 
 
 @atomic
@@ -1442,6 +1525,8 @@ def memory_file_context(
         "tldr": tldr,
         "language": summary.language,
         "symbols": symbols,
+        "lineCount": summary.line_count,
+        "byteCount": summary.byte_count,
         "blobHash": blob_hash,
         "fresh": fresh,
         "changed": bool(existing and not fresh),
@@ -1575,9 +1660,10 @@ def memory_session_summary(
             conn, existing.id, "session_summary_updated",
             reason=reason or "session progressed", source="memory_session_summary",
         )
+        linked = _link_session_files(conn, existing.id, paths)
         return {
             "id": existing.id, "action": "updated", "sessionId": session_id,
-            "files": paths, "commit": commit,
+            "files": paths, "commit": commit, "linked": linked,
         }
 
     item = MemoryItem(
@@ -1596,10 +1682,40 @@ def memory_session_summary(
         conn, item.id, "session_summary_created",
         reason=reason or "session summary", source="memory_session_summary",
     )
+    linked = _link_session_files(conn, item.id, paths)
     return {
         "id": item.id, "action": "created", "sessionId": session_id,
-        "files": paths, "commit": commit,
+        "files": paths, "commit": commit, "linked": linked,
     }
+
+
+def _link_session_files(
+    conn: turso.Connection, session_id: str, paths: list[str]
+) -> int:
+    """Link one session summary to the file-state memories it touched."""
+    linked = 0
+    root = project_root(conn)
+    for raw in paths[:80]:
+        normalized = raw.replace("\\", "/")
+        if root is not None and Path(raw).is_absolute():
+            try:
+                normalized = Path(raw).resolve().relative_to(
+                    Path(root).resolve()
+                ).as_posix()
+            except ValueError:
+                pass
+        file_id = (
+            find_locator_item_by_path(conn, normalized)
+            or find_locator_item_by_path(conn, raw)
+        )
+        if not file_id or file_id == session_id:
+            continue
+        try:
+            insert_relation(conn, session_id, file_id, "touches")
+            linked += 1
+        except turso.IntegrityError:
+            pass
+    return linked
 
 
 def _clean_summary(text: str) -> str:

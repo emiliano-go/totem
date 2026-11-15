@@ -55,7 +55,7 @@ The `npx` command auto-installs or upgrades the Python MCP server, pins its vers
 ## Features
 
 - **14 memory types** with type-specific metadata validation
-- **34 MCP tools** (19 core + 15 typed wrappers)
+- **50 MCP tools** (core, typed wrappers, and memory maintenance)
 - **Staleness detection** via SHA256 content hashing on evidence
 - **Conflict detection** on overlapping evidence and contradictory claims
 - **Full-text search** via Turso FTS5
@@ -294,6 +294,9 @@ totem context --tags "search,sqlite" --current-task "Implementing search" --budg
 # Export/import
 totem export -o backup.json
 totem import backup.json
+
+# Check memory quality
+totem quality
 ```
 
 ## Memory types
@@ -315,7 +318,7 @@ totem import backup.json
 | `architecture` | Component mapping | `component`, `responsibility` |
 | `implementation` | Codebase facts | `subject`, `kind`, `path` |
 
-## MCP tools (34)
+## MCP tools (50)
 
 | Tool | Description |
 |------|-------------|
@@ -334,6 +337,7 @@ totem import backup.json
 | `memory_export_tool` | Export all memories as JSON |
 | `memory_import_tool` | Import memories from JSON (skips duplicates) |
 | `memory_gc_tool` | Purge terminal-state memories past retention (dry-run default) |
+| `memory_quality_tool` | Report signal ratio, provenance, stale evidence, conflicts, and digest composition |
 | `memory_verify_tool` | Record that a memory was verified (sets verified_at/commit, confidence 1.0) |
 | `memory_revalidate_tool` | Void verifications whose evidence changed |
 | `register_file_read_tool` | Store facts learned from reading a file (auto-hashes) |
